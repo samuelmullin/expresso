@@ -6,14 +6,16 @@ defmodule ExpressoFirmware.GaggiaHeater do
   """
 
   require Logger
+  alias Pigpiox.Pwm
 
   defmodule HeaterState do
     defstruct temp: 00.0,
               heater: :off,
-              heater_cycle_ms: 100,
+              reading_loop_ms: 100,
+              pwm_frequency_hz: 1,
               output: 0,
-              pin: 6,
-              output_ref: nil,
+              output_multiplier: 10000, # PWM module outputs 0-100, range for duty cycle is 0 - 1_000_000
+              pin: 12,
               max_temp: 160.0,
               override: false
   end
@@ -29,23 +31,21 @@ defmodule ExpressoFirmware.GaggiaHeater do
   """
   def get_temp(), do: GenServer.call(__MODULE__, :get_temp)
 
-  def set_heater_output(output, max_output), do: GenServer.cast(__MODULE__, {:set_output, output, max_output})
+  def set_heater_output(output, max_output),
+    do: GenServer.cast(__MODULE__, {:set_output, output, max_output})
 
   # --- Callbacks ---
 
   @impl true
   def init(_) do
     state = %HeaterState{}
-    {:ok, output_ref} = Circuits.GPIO.open(state.pin, :output, initial_value: 0)
-    state = struct(state, output_ref: output_ref)
-
-    Process.send_after(self(), :heater_loop, 100)
-
+    Process.send_after(self(), :reading_loop, state.reading_loop_ms)
     {:ok, state}
   end
 
   @impl true
-  def handle_cast({:set_output, output}, state) do
+  def handle_cast({:set_output, output, max_output}, state) do
+    output = set_output(state, output, max_output)
     {:noreply, struct(state, %{output: output})}
   end
 
@@ -61,27 +61,25 @@ defmodule ExpressoFirmware.GaggiaHeater do
     override = case temp >= state.max_temp do
       true ->
         Logger.error("Max temp of #{state.max_temp}c exceeded!  Overriding heater.")
-        set_heater_off(state.output_ref)
+        Pwm.hardware_pwm(state.pin, state.pwm_frequency_hz, 0)
         true
       false ->
         false
     end
-    Process.send_after(self(), :heater_loop, state.heater_cycle_ms)
+    Process.send_after(self(), :heater_loop, state.reading_loop_ms)
 
     {:noreply, struct(state, %{temp: temp, override: override})}
   end
 
-  defp set_heater_on(output_ref, false) do
-    Circuits.GPIO.write(output_ref, 1)
+  defp set_output(%HeaterState{override: true} = state, _output, _max_output) do
+    Pwm.hardware_pwm(state.pin, state.pwm_frequency_hz, 0)
+    0
   end
 
-  defp set_heater_on(output_ref, true) do
-    Circuits.GPIO.write(output_ref, 0)
+  defp set_output(%HeaterState{override: false} = state, output, max_output) do
+    output = floor(output * (1_000_000 / max_output))
+    Pwm.hardware_pwm(state.pin, state.pwm_frequency_hz, output)
+    output
   end
-
-  defp set_heater_off(output_ref) do
-    Circuits.GPIO.write(output_ref, 0)
-  end
-
 
 end

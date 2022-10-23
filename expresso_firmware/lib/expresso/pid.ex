@@ -4,22 +4,21 @@ defmodule ExpressoFirmware.PID do
   require Logger
 
   @moduledoc """
-
-
+  PID goes brrr
   """
 
   defmodule PIDState do
     defstruct kp: 24.0,
               ki: 4.0,
               kd: 0.0,
-              cycle_ms: 2000,
+              cycle_ms: 1000,
               reporting_interval_ms: 100,
               setpoint: 101.0,
               brew_setpoint: 101.0,
               steam_setpoint: 157.0,
               max_integral: 20.0,
-              min_output: 15,
-              max_output: 255,
+              min_output: 10,
+              max_output: 100,
               mode: :brew,
               reading: 20.0,
               last_value: 0,
@@ -27,7 +26,6 @@ defmodule ExpressoFirmware.PID do
               last_output: 0,
               error_sum: 0.0,
               status: :disabled
-
   end
 
   # --- Public API ---
