@@ -55,8 +55,8 @@ config :vintage_net,
           type: VintageNet.Technology.WiFi,
           wifi: %{
             key_mgmt: System.get_env("WIFI_KEY_MANAGEMENT", "wpa_psk") |> String.to_atom(),
-            ssid: "StayukioKiso",
-            psk: "Kisohome35"
+            ssid: "ktnnet",
+            psk: "4165563472"
           },
           ipv4: %{
             method: :dhcp
@@ -96,7 +96,7 @@ config :mdns_lite,
   ]
 
   config :expresso_firmware,
-    heater_module: ExpressoFirmware.StubHeater
+    heater_module: ExpressoFirmware.GaggiaHeater
 
 # Import target specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

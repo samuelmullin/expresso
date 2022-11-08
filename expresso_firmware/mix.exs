@@ -35,7 +35,7 @@ defmodule ExpressoFirmware.MixProject do
       {:shoehorn, "~> 0.9.1"},
       {:ring_logger, "~> 0.8.5"},
       {:toolshed, "~> 0.2.26"},
-      {:max31865, "~> 0.1.0"},
+      {:max31865, path: "../../max31865"},
       {:circuits_gpio, "~> 1.0"},
       {:expresso_ui, path: "../expresso_ui"},
 

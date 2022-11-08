@@ -9,14 +9,14 @@ defmodule ExpressoFirmware.GaggiaHeater do
   alias Pigpiox.Pwm
 
   defmodule HeaterState do
-    defstruct temp: 00.0,
+    defstruct reading: 00.0,
               heater: :off,
               reading_loop_ms: 100,
               pwm_frequency_hz: 1,
               output: 0,
               output_multiplier: 10000, # PWM module outputs 0-100, range for duty cycle is 0 - 1_000_000
               pin: 12,
-              max_temp: 160.0,
+              max_reading: 160.0,
               override: false
   end
 
@@ -29,9 +29,9 @@ defmodule ExpressoFirmware.GaggiaHeater do
   @doc """
     Gets the current temperature of the heater
   """
-  def get_temp(), do: GenServer.call(__MODULE__, :get_temp)
+  def get_reading(), do: GenServer.call(__MODULE__, :get_reading)
 
-  def set_heater_output(output, max_output),
+  def set_output(output, max_output),
     do: GenServer.cast(__MODULE__, {:set_output, output, max_output})
 
   # --- Callbacks ---
@@ -50,25 +50,25 @@ defmodule ExpressoFirmware.GaggiaHeater do
   end
 
   @impl true
-  def handle_call(:get_temp, _from, %HeaterState{temp: temp} = state) do
-    {:reply, temp, state}
+  def handle_call(:get_reading, _from, %HeaterState{reading: reading} = state) do
+    {:reply, reading, state}
   end
 
   @impl true
   def handle_info(:reading_loop, state) do
-    temp = Max31865.get_temp()
+    reading = Max31865.get_temp()
 
-    override = case temp >= state.max_temp do
+    override = case reading >= state.max_reading do
       true ->
-        Logger.error("Max temp of #{state.max_temp}c exceeded!  Overriding heater.")
+        Logger.error("Max temp of #{state.max_reading}c exceeded!  Overriding heater.")
         Pwm.hardware_pwm(state.pin, state.pwm_frequency_hz, 0)
         true
       false ->
         false
     end
-    Process.send_after(self(), :heater_loop, state.reading_loop_ms)
+    Process.send_after(self(), :reading_loop, state.reading_loop_ms)
 
-    {:noreply, struct(state, %{temp: temp, override: override})}
+    {:noreply, struct(state, %{reading: reading, override: override})}
   end
 
   defp set_output(%HeaterState{override: true} = state, _output, _max_output) do

@@ -18,7 +18,7 @@ defmodule ExpressoFirmware.Application do
         # {ExpressoFirmware.Worker, arg},
         {Max31865.Server, [rtd_wires: 3, spi_device_cs_pin: 0]},
         ExpressoFirmware.PID,
-        ExpressoFirmware.StubHeater,
+        ExpressoFirmware.GaggiaHeater,
       ] ++ children(target())
 
     Supervisor.start_link(children, opts)

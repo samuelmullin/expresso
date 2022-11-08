@@ -8,9 +8,9 @@ defmodule ExpressoFirmware.PID do
   """
 
   defmodule PIDState do
-    defstruct kp: 24.0,
-              ki: 4.0,
-              kd: 0.0,
+    defstruct kp: 16.0,
+              ki: 2.5,
+              kd: 16.0,
               cycle_ms: 1000,
               reporting_interval_ms: 100,
               setpoint: 101.0,
