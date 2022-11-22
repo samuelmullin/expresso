@@ -29,6 +29,10 @@ config :logger, backends: [RingLogger]
 config :expresso_ui,
   controller_module: ExpressoFirmware.Controller
 
+config :expresso_firmware,
+  brew_switch_pin: 27,
+  steam_switch_pin: 22
+
 config :expresso_ui, ExpressoUiWeb.Endpoint,
   url: [host: "expresso.local"],
   http: [port: 80],

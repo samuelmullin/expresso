@@ -8,7 +8,8 @@ defmodule ExpressoFirmware.Controller do
   PID goes brrr
   """
 
-  @brew_switch_pin 27
+  @brew_switch_pin Application.compile_env!(:expresso_firmware, :brew_switch_pin)
+  @brew_switch_pin Application.compile_env!(:expresso_firmware, :steam_switch_pin)
 
   defmodule State do
     defstruct kp: 16.0,
@@ -46,15 +47,17 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def init(config) do
-    # Open our brew switch and set interrupts for the GPIO.  This will send an initial
-    # message so we can properly set the initial brew switch state.
+    # Open our brew and steam switches and set interrupts for the GPIO.  This will
+    # send an initial message so we can properly set the initial state.
     {:ok, brew_switch_ref} = GPIO.open(@brew_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(brew_switch_ref, :both)
+    {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
+    Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
 
-    {:ok, struct(%State{}, config ++ [brew_switch_ref: brew_switch_ref])}
+    {:ok, struct(State, config ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref])}
   end
 
   # --- Callbacks ---
@@ -96,6 +99,18 @@ defmodule ExpressoFirmware.Controller do
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 0}, state) do
     Logger.info("Brew switch set to :on, enabling :pwm mode")
     {:noreply, struct(state, [brew_switch_state: :on, mode: :pwm])}
+  end
+
+  @impl true
+  def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 1}, state) do
+    Logger.info("Steam switch set to :off, changing setpoint to brew temp")
+    {:noreply, struct(state, [steam_switch_state: :off, setpoint: state.brew_setpoint])}
+  end
+
+  @impl true
+  def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 0}, state) do
+    Logger.info("Steam switch set to :on, changing setpoint to steam temp")
+    {:noreply, struct(state, [steam_switch_state: :on, setpoint: state.steam_setpoint])}
   end
 
   @impl true
