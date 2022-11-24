@@ -31,7 +31,7 @@ config :expresso_ui,
 
 config :expresso_firmware,
   brew_switch_pin: 27,
-  steam_switch_pin: 22
+  steam_switch_pin: 17
 
 config :expresso_ui, ExpressoUiWeb.Endpoint,
   url: [host: "expresso.local"],

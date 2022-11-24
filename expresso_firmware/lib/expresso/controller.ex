@@ -51,13 +51,13 @@ defmodule ExpressoFirmware.Controller do
     # send an initial message so we can properly set the initial state.
     {:ok, brew_switch_ref} = GPIO.open(@brew_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(brew_switch_ref, :both)
-    {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
-    Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
+    # {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
+    # Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
 
-    {:ok, struct(State, config ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref])}
+    {:ok, struct(State, config ++ [brew_switch_ref: brew_switch_ref])}
   end
 
   # --- Callbacks ---
