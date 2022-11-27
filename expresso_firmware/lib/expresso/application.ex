@@ -17,7 +17,7 @@ defmodule ExpressoFirmware.Application do
         # Starts a worker by calling: Expresso.Worker.start_link(arg)
         # {ExpressoFirmware.Worker, arg},
         {Max31865.Server, [rtd_wires: 3, spi_device_cs_pin: 0]},
-        ExpressoFirmware.PID,
+        ExpressoFirmware.Controller,
         ExpressoFirmware.GaggiaHeater,
       ] ++ children(target())
 

@@ -27,7 +27,11 @@ config :nerves, source_date_epoch: "1662989430"
 config :logger, backends: [RingLogger]
 
 config :expresso_ui,
-  pid_controller: ExpressoFirmware.PID
+  controller_module: ExpressoFirmware.Controller
+
+config :expresso_firmware,
+  brew_switch_pin: 27,
+  steam_switch_pin: 17
 
 config :expresso_ui, ExpressoUiWeb.Endpoint,
   url: [host: "expresso.local"],

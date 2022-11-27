@@ -1,4 +1,4 @@
-defmodule ExpressoUi.StubPID do
+defmodule ExpressoUi.StubController do
 def set_config(config), do: config
 def get_state(), do: %{
   temp: 93,

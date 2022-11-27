@@ -16,13 +16,13 @@ defmodule ExpressoFirmware.GaggiaHeater do
               output: 0,
               output_multiplier: 10000, # PWM module outputs 0-100, range for duty cycle is 0 - 1_000_000
               pin: 12,
-              max_reading: 160.0,
+              max_reading: 165.0,
               override: false
   end
 
   # --- Public Functions ---
 
-  def start_link(config) do
+  def start_link(config \\ []) do
     GenServer.start_link(__MODULE__, config, name: __MODULE__)
   end
 
@@ -37,8 +37,8 @@ defmodule ExpressoFirmware.GaggiaHeater do
   # --- Callbacks ---
 
   @impl true
-  def init(_) do
-    state = %HeaterState{}
+  def init(config) do
+    state = struct(%HeaterState{}, config)
     Process.send_after(self(), :reading_loop, state.reading_loop_ms)
     {:ok, state}
   end
@@ -71,7 +71,8 @@ defmodule ExpressoFirmware.GaggiaHeater do
     {:noreply, struct(state, %{reading: reading, override: override})}
   end
 
-  defp set_output(%HeaterState{override: true} = state, _output, _max_output) do
+  defp set_output(%HeaterState{override: true} = state, output, _max_output) do
+    Logger.info("Heater disabled, but received request for output of #{output}.")
     Pwm.hardware_pwm(state.pin, state.pwm_frequency_hz, 0)
     0
   end

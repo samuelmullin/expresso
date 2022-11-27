@@ -17,7 +17,7 @@ defmodule ExpressoUiWeb.Router do
   scope "/", ExpressoUiWeb do
     pipe_through :browser
 
-    live "/", PIDLive
+    live "/", ControllerLive
   end
 
   # Other scopes may use custom stacks.
