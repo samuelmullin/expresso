@@ -55,8 +55,8 @@ config :vintage_net,
           type: VintageNet.Technology.WiFi,
           wifi: %{
             key_mgmt: System.get_env("WIFI_KEY_MANAGEMENT", "wpa_psk") |> String.to_atom(),
-            ssid: "ktnnet",
-            psk: "4165563472"
+            ssid: "yourssid",
+            psk: "yourpassword"
           },
           ipv4: %{
             method: :dhcp
