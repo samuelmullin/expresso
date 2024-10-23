@@ -18,7 +18,7 @@ The generally accepted ideal temperature range to brew espresso is a much smalle
 
 For reference, the steam thermostat is similar - it's an L145-15C, which engages at 130°C and disengages at 160°C.  While higher is better for steaming, the GCP has a thermal fuse at 184°C so when setting a steam temp we need to make sure that any overshoot will keep us well below that temperature.
 
-\*If you are wondering why this range is lower than the min range of the thermostat, please read [On-boiler-to-brew-head drop](#On boiler-to-brew-head drop)
+\*If you are wondering why this range is lower than the min range of the thermostat, please read: [On boiler-to-brew-head drop](#on-boiler-to-brew-head-drop))
 
 ## On boiler-to-brew-head drop
 
