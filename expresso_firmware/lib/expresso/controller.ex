@@ -23,8 +23,11 @@ defmodule ExpressoFirmware.Controller do
 
   defmodule State do
     defstruct kp: 16.0,
+              base_kp: 16.0,
               ki: 2.5,
               kd: 16.0,
+              tau_seconds: 45.0,
+              process_gain: 1.0,
               cycle_ms: 1000,
               reporting_interval_ms: 100,
               setpoint: 101.0,
@@ -108,6 +111,9 @@ defmodule ExpressoFirmware.Controller do
       |> Keyword.put(:kp, kp)
       |> Keyword.put(:ki, ki)
       |> Keyword.put(:kd, kd)
+      |> Keyword.put(:base_kp, kp)  # anchor for brew boost/restore
+      |> Keyword.put(:tau_seconds, tau)
+      |> Keyword.put(:process_gain, process_gain)
 
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
@@ -131,14 +137,14 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_call({:autotune_lambda, lambda_seconds}, _from, state) do
-    {new_kp, new_ki, new_kd} = calculate_lambda_gains(@default_tau_seconds, lambda_seconds)
+    {new_kp, new_ki, new_kd} = calculate_lambda_gains(state.tau_seconds, lambda_seconds, state.process_gain)
 
     Logger.info(
       "Re-tuning with lambda=#{lambda_seconds}s: " <>
       "new gains: kp=#{Float.round(new_kp, 2)}, ki=#{Float.round(new_ki, 2)}, kd=#{new_kd}"
     )
 
-    new_state = struct(state, kp: new_kp, ki: new_ki, kd: new_kd)
+    new_state = struct(state, kp: new_kp, ki: new_ki, kd: new_kd, base_kp: new_kp)
     {:reply, {new_kp, new_ki, new_kd}, new_state}
   end
 
@@ -175,7 +181,7 @@ defmodule ExpressoFirmware.Controller do
       mode: :pid,
       initialized: false,  # Re-initialize PID for new setpoint
       setpoint: state.brew_setpoint,
-      kp: state.kp / @brew_kp_multiplier,  # Restore original Kp
+      kp: state.base_kp,  # Restore original Kp
       error_sum: 0.0,
       last_error: 0
     )
@@ -196,7 +202,7 @@ defmodule ExpressoFirmware.Controller do
       mode: :pid,
       initialized: false,  # Re-initialize PID for new setpoint
       setpoint: state.brew_setpoint + @brew_cooling_compensation_c,
-      kp: state.kp * @brew_kp_multiplier,
+      kp: state.base_kp * @brew_kp_multiplier,
       error_sum: 0.0,
       last_error: 0
     )

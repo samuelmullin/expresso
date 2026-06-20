@@ -91,6 +91,7 @@ defmodule ExpressoFirmware.ControllerTest do
         brew_setpoint: 93.5,
         setpoint: 93.5,
         kp: 16.0,
+        base_kp: 16.0,
         ki: 2.5,
         kd: 16.0,
         error_sum: 0.0,
@@ -112,8 +113,8 @@ defmodule ExpressoFirmware.ControllerTest do
       # Mode should be :pid (not :pwm)
       assert new_state.mode == :pid
 
-      # Kp should be boosted by 1.2×
-      assert_in_delta(new_state.kp, 16.0 * 1.2, 0.01)
+      # Kp should be boosted by 1.2× from base_kp (not from current kp, to prevent compounding)
+      assert_in_delta(new_state.kp, state.base_kp * 1.2, 0.01)
 
       # Integral should be reset to prevent windup
       assert new_state.error_sum == 0.0
@@ -127,6 +128,7 @@ defmodule ExpressoFirmware.ControllerTest do
         brew_setpoint: 93.5,
         setpoint: 96.2,  # boosted during brew
         kp: 16.0 * 1.2,   # boosted
+        base_kp: 16.0,
         ki: 2.5,
         kd: 16.0,
         error_sum: 0.0,
@@ -143,8 +145,8 @@ defmodule ExpressoFirmware.ControllerTest do
       # Setpoint should return to brew setpoint (no more compensation)
       assert new_state.setpoint == 93.5
 
-      # Kp should be restored to original
-      assert_in_delta(new_state.kp, 16.0, 0.01)
+      # Kp should be restored to base_kp (not divided, to prevent permanent drift on bounce)
+      assert_in_delta(new_state.kp, state.base_kp, 0.01)
 
       # Mode should remain :pid
       assert new_state.mode == :pid
