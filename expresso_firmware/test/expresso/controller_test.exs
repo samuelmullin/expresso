@@ -154,6 +154,33 @@ defmodule ExpressoFirmware.ControllerTest do
     end
   end
 
+  describe "lambda tuning gain calculation" do
+    test "calculate_lambda_gains returns expected gains for default parameters" do
+      tau = 45.0
+      lambda = 10.0
+      process_gain = 1.0
+
+      {kp, ki, kd} = Controller.calculate_lambda_gains(tau, lambda, process_gain)
+
+      # kp = (1/1.0) * (45 / (10 + 45)) = 45/55 ≈ 0.818
+      # ki = 0.818 / (45 + 10) = 0.818 / 55 ≈ 0.0149
+      # kd = 0
+      assert_in_delta(kp, 45.0 / 55.0, 0.01)
+      assert_in_delta(ki, (45.0 / 55.0) / 55.0, 0.001)
+      assert kd == 0
+    end
+
+    test "faster lambda produces higher Kp" do
+      tau = 45.0
+      process_gain = 1.0
+
+      {kp_slow, _, _} = Controller.calculate_lambda_gains(tau, 15.0, process_gain)
+      {kp_fast, _, _} = Controller.calculate_lambda_gains(tau, 5.0, process_gain)
+
+      assert kp_fast > kp_slow
+    end
+  end
+
   describe "anti-windup integration" do
     @tag :anti_windup
     test "integral freezes when output saturates at max" do

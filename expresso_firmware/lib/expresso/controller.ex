@@ -16,6 +16,11 @@ defmodule ExpressoFirmware.Controller do
   @brew_cooling_compensation_c @brew_cooling_rate_c_per_sec * @typical_brew_duration_sec  # ~2.7°C
   @brew_kp_multiplier 1.2
 
+  # Lambda Tuning parameters
+  @default_tau_seconds 45.0
+  @default_lambda_seconds 10.0
+  @default_process_gain 1.0
+
   defmodule State do
     defstruct kp: 16.0,
               ki: 2.5,
@@ -61,6 +66,21 @@ defmodule ExpressoFirmware.Controller do
   def set_config(key, value), do: GenServer.call(__MODULE__, {:set_config, key, value})
   def get_state(), do: GenServer.call(__MODULE__, :get_state)
 
+  @doc """
+  Calculate PID gains using Lambda Tuning method.
+  """
+  def calculate_lambda_gains(tau_seconds \\ @default_tau_seconds, lambda_seconds \\ @default_lambda_seconds, process_gain \\ @default_process_gain) do
+    kp = (1 / process_gain) * (tau_seconds / (lambda_seconds + tau_seconds))
+    ki = kp / (tau_seconds + lambda_seconds)
+    kd = 0
+
+    {kp, ki, kd}
+  end
+
+  def autotune_lambda(lambda_seconds) do
+    GenServer.call(__MODULE__, {:autotune_lambda, lambda_seconds})
+  end
+
   @impl true
   def init(config) do
     # Open our brew and steam switches and set interrupts for the GPIO.  This will
@@ -70,13 +90,32 @@ defmodule ExpressoFirmware.Controller do
     {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
+    # Calculate PID gains using Lambda Tuning unless overridden in config
+    tau = Keyword.get(config, :tau_seconds, @default_tau_seconds)
+    lambda = Keyword.get(config, :lambda_seconds, @default_lambda_seconds)
+    process_gain = Keyword.get(config, :process_gain, @default_process_gain)
+
+    {kp, ki, kd} = calculate_lambda_gains(tau, lambda, process_gain)
+
+    Logger.info(
+      "Controller initialized with Lambda Tuning gains: " <>
+      "kp=#{Float.round(kp, 2)}, ki=#{Float.round(ki, 2)}, kd=#{kd} " <>
+      "(tau=#{tau}s, lambda=#{lambda}s)"
+    )
+
+    config_with_gains =
+      config
+      |> Keyword.put(:kp, kp)
+      |> Keyword.put(:ki, ki)
+      |> Keyword.put(:kd, kd)
+
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
 
     {:ok,
      struct(
        State,
-       config ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
+       config_with_gains ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
      )}
   end
 
@@ -88,6 +127,19 @@ defmodule ExpressoFirmware.Controller do
   def handle_call({:set_config, new_config}, _, %State{} = state) do
     state = struct(state, new_config)
     {:reply, state, state}
+  end
+
+  @impl true
+  def handle_call({:autotune_lambda, lambda_seconds}, _from, state) do
+    {new_kp, new_ki, new_kd} = calculate_lambda_gains(@default_tau_seconds, lambda_seconds)
+
+    Logger.info(
+      "Re-tuning with lambda=#{lambda_seconds}s: " <>
+      "new gains: kp=#{Float.round(new_kp, 2)}, ki=#{Float.round(new_ki, 2)}, kd=#{new_kd}"
+    )
+
+    new_state = struct(state, kp: new_kp, ki: new_ki, kd: new_kd)
+    {:reply, {new_kp, new_ki, new_kd}, new_state}
   end
 
   @impl true
