@@ -81,4 +81,63 @@ defmodule ExpressoFirmware.ControllerTest do
       # Thus no derivative spike
     end
   end
+
+  describe "anti-windup integration" do
+    @tag :anti_windup
+    test "integral freezes when output saturates at max" do
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        reading: 60.0,
+        last_error: 35.0,  # error with setpoint 130
+        last_output: 0,
+        error_sum: 20.0,   # already near max_integral
+        setpoint: 130.0,   # reading from get_reading() will be 95, so error = 130 - 95 = 35
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        cycle_ms: 1000,
+        max_integral: 20.0,
+        min_output: 0,
+        max_output: 100
+      }
+
+      # With Ki=2.5 and error_sum=20.0, ki contribution = 50, which when added to kp term
+      # will exceed max_output=100, causing saturation
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      # When output is saturated, error_sum should NOT increase further
+      # (it should remain frozen at the previous value during saturation)
+      assert new_state.error_sum == state.error_sum
+      assert new_state.last_output == 100  # output clamped to max
+    end
+
+    @tag :anti_windup
+    test "integral resumes accumulating when output leaves saturation" do
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        reading: 94.0,   # getting close to setpoint
+        last_error: 1.0,
+        last_output: 100,
+        error_sum: 20.0,  # frozen during previous saturation
+        setpoint: 96.0,   # reading from get_reading() will be 95, so error = 96 - 95 = 1
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        cycle_ms: 1000,
+        max_integral: 25.0,
+        min_output: 0,
+        max_output: 100
+      }
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      # Error is now small (1°C), so output won't saturate
+      # error_sum should resume accumulating
+      expected_error_sum = 20.0 + 1.0  # frozen value + new error
+      assert new_state.error_sum == expected_error_sum
+    end
+  end
 end

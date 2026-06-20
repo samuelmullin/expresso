@@ -160,11 +160,21 @@ defmodule ExpressoFirmware.Controller do
     reading = get_reading()
     error = state.setpoint - reading
     error_change = error - state.last_error
-    error_sum = clamp_integral(state.error_sum + error, state.max_integral)
 
-    # Calculate output
+    # Calculate output first (before clamping) to detect saturation
+    unclamped_output = state.kp * error + state.ki * state.error_sum + state.kd * error_change
+
+    # Anti-windup: only accumulate integral if output is NOT saturated
+    error_sum =
+      if unclamped_output >= state.max_output or unclamped_output <= state.min_output do
+        state.error_sum  # Hold integral constant when saturated
+      else
+        clamp_integral(state.error_sum + error, state.max_integral)
+      end
+
+    # Now clamp the output
     output =
-      (state.kp * error + state.ki * error_sum + state.kd * error_change)
+      unclamped_output
       |> floor()
       |> clamp_output(state.min_output, state.max_output)
 
