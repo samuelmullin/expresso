@@ -32,7 +32,8 @@ defmodule ExpressoFirmware.Controller do
               reading: 20.0,
               last_error: 0,
               last_output: 0,
-              error_sum: 0.0
+              error_sum: 0.0,
+              initialized: false
   end
 
   # --- Public API ---
@@ -94,7 +95,7 @@ defmodule ExpressoFirmware.Controller do
         :off -> :pid
       end
 
-    {:noreply, struct(state, mode: mode)}
+    {:noreply, struct(state, mode: mode, initialized: false)}
   end
 
   @impl true
@@ -108,25 +109,25 @@ defmodule ExpressoFirmware.Controller do
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 1}, state) do
     Logger.info("Brew switch set to :off, enabling :pid mode")
-    {:noreply, struct(state, brew_switch_state: :off, mode: :pid)}
+    {:noreply, struct(state, brew_switch_state: :off, mode: :pid, initialized: false)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 0}, state) do
     Logger.info("Brew switch set to :on, enabling :pwm mode")
-    {:noreply, struct(state, brew_switch_state: :on, mode: :pwm)}
+    {:noreply, struct(state, brew_switch_state: :on, mode: :pwm, initialized: false)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 1}, state) do
     Logger.info("Steam switch set to :off, changing setpoint to brew temp")
-    {:noreply, struct(state, steam_switch_state: :off, setpoint: state.brew_setpoint)}
+    {:noreply, struct(state, steam_switch_state: :off, setpoint: state.brew_setpoint, initialized: false)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 0}, state) do
     Logger.info("Steam switch set to :on, changing setpoint to steam temp")
-    {:noreply, struct(state, steam_switch_state: :on, setpoint: state.steam_setpoint)}
+    {:noreply, struct(state, steam_switch_state: :on, setpoint: state.steam_setpoint, initialized: false)}
   end
 
   @impl true
@@ -136,7 +137,25 @@ defmodule ExpressoFirmware.Controller do
   end
 
   @impl true
-  def handle_info(:control_loop, %State{mode: :pid} = state) do
+  def handle_info(:control_loop, %State{mode: :pid, initialized: false} = state) do
+    # First control cycle: read sensor and initialize last_error without calculating PID
+    reading = get_reading()
+
+    Logger.debug("PID controller initializing: setpoint=#{state.setpoint}, reading=#{reading}")
+
+    state =
+      struct(state,
+        reading: reading,
+        last_error: state.setpoint - reading,
+        initialized: true
+      )
+
+    Process.send_after(self(), :control_loop, state.cycle_ms)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:control_loop, %State{mode: :pid, initialized: true} = state) do
     # Compute PID Vars
     reading = get_reading()
     error = state.setpoint - reading

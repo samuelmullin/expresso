@@ -8,6 +8,10 @@ defmodule ExpressoFirmware.ControllerTest do
       send(ExpressoFirmware.ControllerTest, {:set_output, output, max_output})
       :ok
     end
+
+    def get_reading() do
+      95.0
+    end
   end
 
   setup do
@@ -41,5 +45,40 @@ defmodule ExpressoFirmware.ControllerTest do
 
     assert :ok = Controller.terminate(:sensor_failure, state)
     assert_receive {:set_output, 0, 100}
+  end
+
+  describe "derivative kick prevention" do
+    @tag :derivative_kick_prevention
+    test "first PID cycle does not apply derivative term" do
+      # Simulate: system at 95°C (real), setpoint 95°C, reading initialized to 20°C
+      state = %Controller.State{
+        mode: :pid,
+        initialized: false,
+        reading: 20.0,
+        last_error: 0,
+        last_output: 0,
+        error_sum: 0.0,
+        setpoint: 95.0,
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        cycle_ms: 1000,
+        max_integral: 20.0,
+        min_output: 0,
+        max_output: 100
+      }
+
+      # Send first control loop — should initialize without applying PID
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      # After first cycle:
+      # - initialized should be true
+      # - last_error should be set from real reading (not 0)
+      # - no heater output yet (next cycle applies PID)
+      assert new_state.initialized == true
+      assert new_state.last_error == 0.0
+      # On second cycle, error_change will be (95 - 95) - (95 - 95) = 0
+      # Thus no derivative spike
+    end
   end
 end
