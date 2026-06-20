@@ -82,6 +82,78 @@ defmodule ExpressoFirmware.ControllerTest do
     end
   end
 
+  describe "brew phase feedforward compensation" do
+    @tag :brew_phase
+    test "brew switch ON boosts setpoint by expected cooling compensation" do
+      state = %Controller.State{
+        mode: :pid,
+        brew_switch_state: :off,
+        brew_setpoint: 93.5,
+        setpoint: 93.5,
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        error_sum: 0.0,
+        last_error: 0,
+        reading: 93.5,
+        brew_switch_ref: nil,
+        steam_switch_ref: nil,
+        initialized: false
+      }
+
+      send_message = {:circuits_gpio, 27, 0, 0}  # @brew_switch_pin = 27, value 0 = ON
+      {:noreply, new_state} = Controller.handle_info(send_message, state)
+
+      # Expected: setpoint raised by ~2.7°C (0.1°C/sec * 27 sec)
+      # 93.5 + 2.7 = 96.2°C
+      expected_setpoint = 93.5 + 2.7
+      assert_in_delta(new_state.setpoint, expected_setpoint, 0.05)
+
+      # Mode should be :pid (not :pwm)
+      assert new_state.mode == :pid
+
+      # Kp should be boosted by 1.2×
+      assert_in_delta(new_state.kp, 16.0 * 1.2, 0.01)
+
+      # Integral should be reset to prevent windup
+      assert new_state.error_sum == 0.0
+    end
+
+    @tag :brew_phase
+    test "brew switch OFF restores normal setpoint and Kp" do
+      state = %Controller.State{
+        mode: :pid,
+        brew_switch_state: :on,
+        brew_setpoint: 93.5,
+        setpoint: 96.2,  # boosted during brew
+        kp: 16.0 * 1.2,   # boosted
+        ki: 2.5,
+        kd: 16.0,
+        error_sum: 0.0,
+        last_error: 0,
+        reading: 96.0,
+        brew_switch_ref: nil,
+        steam_switch_ref: nil,
+        initialized: true
+      }
+
+      send_message = {:circuits_gpio, 27, 0, 1}  # @brew_switch_pin = 27, value 1 = OFF
+      {:noreply, new_state} = Controller.handle_info(send_message, state)
+
+      # Setpoint should return to brew setpoint (no more compensation)
+      assert new_state.setpoint == 93.5
+
+      # Kp should be restored to original
+      assert_in_delta(new_state.kp, 16.0, 0.01)
+
+      # Mode should remain :pid
+      assert new_state.mode == :pid
+
+      # Integral reset on transition
+      assert new_state.error_sum == 0.0
+    end
+  end
+
   describe "anti-windup integration" do
     @tag :anti_windup
     test "integral freezes when output saturates at max" do

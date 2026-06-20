@@ -11,6 +11,11 @@ defmodule ExpressoFirmware.Controller do
   @brew_switch_pin Application.compile_env!(:expresso_firmware, :brew_switch_pin)
   @steam_switch_pin Application.compile_env!(:expresso_firmware, :steam_switch_pin)
 
+  @brew_cooling_rate_c_per_sec 0.1
+  @typical_brew_duration_sec 27
+  @brew_cooling_compensation_c @brew_cooling_rate_c_per_sec * @typical_brew_duration_sec  # ~2.7°C
+  @brew_kp_multiplier 1.2
+
   defmodule State do
     defstruct kp: 16.0,
               ki: 2.5,
@@ -108,14 +113,43 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 1}, state) do
-    Logger.info("Brew switch set to :off, enabling :pid mode")
-    {:noreply, struct(state, brew_switch_state: :off, mode: :pid, initialized: false)}
+    Logger.info(
+      "Brew switch OFF - returning to normal PID. " <>
+      "Restore setpoint to #{state.brew_setpoint}°C and Kp to normal"
+    )
+
+    normal_state = struct(state,
+      brew_switch_state: :off,
+      mode: :pid,
+      initialized: false,  # Re-initialize PID for new setpoint
+      setpoint: state.brew_setpoint,
+      kp: state.kp / @brew_kp_multiplier,  # Restore original Kp
+      error_sum: 0.0,
+      last_error: 0
+    )
+
+    {:noreply, normal_state}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 0}, state) do
-    Logger.info("Brew switch set to :on, enabling :pwm mode")
-    {:noreply, struct(state, brew_switch_state: :on, mode: :pwm, initialized: false)}
+    Logger.info(
+      "Brew switch ON - activating PID with feedforward compensation. " <>
+      "Boost setpoint by #{@brew_cooling_compensation_c}°C and Kp by #{@brew_kp_multiplier}×"
+    )
+
+    # Enter PID mode (not PWM) with boosted setpoint and Kp to compensate for measured cooling
+    boosted_state = struct(state,
+      brew_switch_state: :on,
+      mode: :pid,
+      initialized: false,  # Re-initialize PID for new setpoint
+      setpoint: state.brew_setpoint + @brew_cooling_compensation_c,
+      kp: state.kp * @brew_kp_multiplier,
+      error_sum: 0.0,
+      last_error: 0
+    )
+
+    {:noreply, boosted_state}
   end
 
   @impl true
@@ -196,10 +230,13 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_info(:control_loop, %State{mode: :pwm} = state) do
-    Logger.info("Heater control is in :pwm mode with setpoint: #{state.setpoint}")
-    heater().set_output(state.brew_pwm_output, state.max_output)
-    Process.send_after(self(), :control_loop, state.cycle_ms)
-    {:noreply, struct(state, last_output: 0, last_error: 0, error_sum: 0)}
+    Logger.warning(
+      "PWM mode is deprecated. Brew phase now uses intelligent PID with feedforward. " <>
+      "Treating as :pid mode."
+    )
+
+    # Delegate to PID mode handler (will handle the next control loop)
+    handle_info(:control_loop, struct(state, mode: :pid, initialized: false))
   end
 
   @impl true
