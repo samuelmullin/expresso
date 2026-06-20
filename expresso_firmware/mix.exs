@@ -9,13 +9,18 @@ defmodule ExpressoFirmware.MixProject do
     [
       app: @app,
       version: @version,
-      elixir: "~> 1.11",
-      archives: [nerves_bootstrap: "~> 1.11"],
+      elixir: "~> 1.19",
+      archives: [nerves_bootstrap: "~> 1.15"],
       start_permanent: Mix.env() == :prod,
       build_embedded: true,
       deps: deps(),
-      releases: [{@app, release()}],
-      preferred_cli_target: [run: :host, test: :host]
+      releases: [{@app, release()}]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_targets: [run: :host, test: :host]
     ]
   end
 
@@ -31,34 +36,34 @@ defmodule ExpressoFirmware.MixProject do
   defp deps do
     [
       # Dependencies for all targets
-      {:nerves, "~> 1.7.16 or ~> 1.8.0", runtime: false},
-      {:shoehorn, "~> 0.9.1"},
-      {:ring_logger, "~> 0.8.5"},
-      {:toolshed, "~> 0.2.26"},
+      {:nerves, "~> 1.14", runtime: false},
+      {:shoehorn, "~> 0.9.3"},
+      {:ring_logger, "~> 0.11.5"},
+      {:toolshed, "~> 0.5.0"},
       {:max31865, path: "../../max31865"},
-      {:circuits_gpio, "~> 1.0"},
+      {:circuits_gpio, "~> 2.2"},
       {:expresso_ui, path: "../expresso_ui"},
 
       # Dependencies for all targets except :host
       {:pigpiox, "~> 0.1", targets: @all_targets},
-      {:nerves_runtime, "~> 0.13.0", targets: @all_targets},
-      {:nerves_pack, "~> 0.7.0", targets: @all_targets},
+      {:nerves_runtime, "~> 0.13.13", targets: @all_targets},
+      {:nerves_pack, "~> 0.7.2", targets: @all_targets},
 
       # Dependencies for specific targets
       # NOTE: It's generally low risk and recommended to follow minor version
       # bumps to Nerves systems. Since these include Linux kernel and Erlang
       # version updates, please review their release notes in case
       # changes to your application are needed.
-      {:nerves_system_rpi, "~> 1.19", runtime: false, targets: :rpi},
-      {:nerves_system_rpi0, "~> 1.19", runtime: false, targets: :rpi0},
-      {:nerves_system_rpi2, "~> 1.19", runtime: false, targets: :rpi2},
-      {:nerves_system_rpi3, "~> 1.19", runtime: false, targets: :rpi3},
-      {:nerves_system_rpi3a, "~> 1.19", runtime: false, targets: :rpi3a},
-      {:nerves_system_rpi4, "~> 1.19", runtime: false, targets: :rpi4},
-      {:nerves_system_bbb, "~> 2.14", runtime: false, targets: :bbb},
-      {:nerves_system_osd32mp1, "~> 0.10", runtime: false, targets: :osd32mp1},
-      {:nerves_system_x86_64, "~> 1.19", runtime: false, targets: :x86_64},
-      {:nerves_system_grisp2, "~> 0.3", runtime: false, targets: :grisp2}
+      {:nerves_system_rpi, "~> 2.0", runtime: false, targets: :rpi},
+      {:nerves_system_rpi0, "~> 2.0", runtime: false, targets: :rpi0},
+      {:nerves_system_rpi2, "~> 2.0", runtime: false, targets: :rpi2},
+      {:nerves_system_rpi3, "~> 2.0", runtime: false, targets: :rpi3},
+      {:nerves_system_rpi3a, "~> 2.0", runtime: false, targets: :rpi3a},
+      {:nerves_system_rpi4, "~> 2.0", runtime: false, targets: :rpi4},
+      {:nerves_system_bbb, "~> 2.29", runtime: false, targets: :bbb},
+      {:nerves_system_osd32mp1, "~> 0.24.5", runtime: false, targets: :osd32mp1},
+      {:nerves_system_x86_64, "~> 1.33", runtime: false, targets: :x86_64},
+      {:nerves_system_grisp2, "~> 0.17.5", runtime: false, targets: :grisp2}
     ]
   end
 
