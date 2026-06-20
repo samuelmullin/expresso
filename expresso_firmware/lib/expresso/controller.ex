@@ -23,7 +23,7 @@ defmodule ExpressoFirmware.Controller do
               max_integral: 20.0,
               min_output: 0,
               max_output: 100,
-              brew_pwm_output: 50.0,
+              brew_pwm_output: 30.0,
               brew_switch_ref: nil,
               steam_switch_ref: nil,
               brew_switch_state: :off,
@@ -36,6 +36,16 @@ defmodule ExpressoFirmware.Controller do
   end
 
   # --- Public API ---
+
+  def child_spec(config) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [config]},
+      restart: :permanent,
+      shutdown: 5_000,
+      type: :worker
+    }
+  end
 
   def start_link(config \\ []) do
     GenServer.start_link(__MODULE__, config, name: __MODULE__)
@@ -52,12 +62,16 @@ defmodule ExpressoFirmware.Controller do
     {:ok, brew_switch_ref} = GPIO.open(@brew_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(brew_switch_ref, :both)
     {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
-     Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
+    Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
 
-    {:ok, struct(State, config ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref])}
+    {:ok,
+     struct(
+       State,
+       config ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
+     )}
   end
 
   # --- Callbacks ---
@@ -73,12 +87,14 @@ defmodule ExpressoFirmware.Controller do
   @impl true
   def handle_cast(:enable_pid, %State{} = state) do
     Logger.info("Enabling PID")
-    mode = case state.brew_switch_state do
-      :on -> :pwm
-      :off -> :pid
-    end
 
-    {:noreply, struct(state, [mode: mode])}
+    mode =
+      case state.brew_switch_state do
+        :on -> :pwm
+        :off -> :pid
+      end
+
+    {:noreply, struct(state, mode: mode)}
   end
 
   @impl true
@@ -86,31 +102,31 @@ defmodule ExpressoFirmware.Controller do
     Logger.info("Disabling PID")
     heater().set_output(0, state.max_output)
 
-    {:noreply, struct(state, [mode: :disabled])}
+    {:noreply, struct(state, mode: :disabled)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 1}, state) do
     Logger.info("Brew switch set to :off, enabling :pid mode")
-    {:noreply, struct(state, [brew_switch_state: :off, mode: :pid])}
+    {:noreply, struct(state, brew_switch_state: :off, mode: :pid)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 0}, state) do
     Logger.info("Brew switch set to :on, enabling :pwm mode")
-    {:noreply, struct(state, [brew_switch_state: :on, mode: :pwm])}
+    {:noreply, struct(state, brew_switch_state: :on, mode: :pwm)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 1}, state) do
     Logger.info("Steam switch set to :off, changing setpoint to brew temp")
-    {:noreply, struct(state, [steam_switch_state: :off, setpoint: state.brew_setpoint])}
+    {:noreply, struct(state, steam_switch_state: :off, setpoint: state.brew_setpoint)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 0}, state) do
     Logger.info("Steam switch set to :on, changing setpoint to steam temp")
-    {:noreply, struct(state, [steam_switch_state: :on, setpoint: state.steam_setpoint])}
+    {:noreply, struct(state, steam_switch_state: :on, setpoint: state.steam_setpoint)}
   end
 
   @impl true
@@ -128,17 +144,19 @@ defmodule ExpressoFirmware.Controller do
     error_sum = clamp_integral(state.error_sum + error, state.max_integral)
 
     # Calculate output
-    output = ((state.kp * error) + (state.ki * error_sum) + (state.kd * error_change))
-    |> floor()
-    |> clamp_output(state.min_output, state.max_output)
+    output =
+      (state.kp * error + state.ki * error_sum + state.kd * error_change)
+      |> floor()
+      |> clamp_output(state.min_output, state.max_output)
 
     # Update the state with the new calculated variables and enable the heater if necessary
-    state = struct(state, [
-      error_sum: error_sum,
-      last_output: output,
-      last_error: error,
-      reading: reading
-    ])
+    state =
+      struct(state,
+        error_sum: error_sum,
+        last_output: output,
+        last_error: error,
+        reading: reading
+      )
 
     heater().set_output(output, state.max_output)
 
@@ -152,21 +170,31 @@ defmodule ExpressoFirmware.Controller do
     Logger.info("Heater control is in :pwm mode with setpoint: #{state.setpoint}")
     heater().set_output(state.brew_pwm_output, state.max_output)
     Process.send_after(self(), :control_loop, state.cycle_ms)
-    {:noreply, struct(state, [last_output: 0, last_error: 0, error_sum: 0])}
+    {:noreply, struct(state, last_output: 0, last_error: 0, error_sum: 0)}
   end
 
   @impl true
   def handle_info(:control_loop, %State{mode: :disabled} = state) do
     Logger.debug("Heater control is disabled")
     Process.send_after(self(), :control_loop, state.cycle_ms)
-    {:noreply, struct(state, [last_output: 0, last_error: 0, error_sum: 0])}
+    {:noreply, struct(state, last_output: 0, last_error: 0, error_sum: 0)}
   end
 
   @impl true
   def handle_info(message, state) do
-    Logger.info("Unxpected info message received!  Killing PID output.  Message: #{inspect(message)} State: #{inspect(state)}")
+    Logger.info(
+      "Unxpected info message received!  Killing PID output.  Message: #{inspect(message)} State: #{inspect(state)}"
+    )
+
     heater().set_output(0, state.max_output)
     {:noreply, state}
+  end
+
+  @impl true
+  def terminate(reason, %State{} = state) do
+    Logger.error("Controller terminating; forcing heater off. Reason: #{inspect(reason)}")
+    shutdown_heater(state)
+    :ok
   end
 
   # --- Private API ---
@@ -184,6 +212,19 @@ defmodule ExpressoFirmware.Controller do
 
   defp get_reading(), do: heater().get_reading()
 
-  defp heater(), do: Application.get_env(:expresso_firmware, :heater_module, ExpressoFirmware.StubHeater)
+  defp shutdown_heater(state) do
+    heater().set_output(0, state.max_output)
+    :ok
+  rescue
+    error ->
+      Logger.error("Controller heater shutdown raised: #{inspect(error)}")
+      :error
+  catch
+    kind, reason ->
+      Logger.error("Controller heater shutdown failed: #{inspect({kind, reason})}")
+      :error
+  end
 
+  defp heater(),
+    do: Application.get_env(:expresso_firmware, :heater_module, ExpressoFirmware.StubHeater)
 end

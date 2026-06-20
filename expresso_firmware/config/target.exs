@@ -50,18 +50,18 @@ config :vintage_net,
        type: VintageNetEthernet,
        ipv4: %{method: :dhcp}
      }},
-     {"wlan0",
-        %{
-          type: VintageNet.Technology.WiFi,
-          wifi: %{
-            key_mgmt: System.get_env("WIFI_KEY_MANAGEMENT", "wpa_psk") |> String.to_atom(),
-            ssid: "yourssid",
-            psk: "yourpassword"
-          },
-          ipv4: %{
-            method: :dhcp
-          }
-        }}
+    {"wlan0",
+     %{
+       type: VintageNet.Technology.WiFi,
+       wifi: %{
+         key_mgmt: System.get_env("WIFI_KEY_MANAGEMENT", "wpa_psk") |> String.to_atom(),
+         ssid: System.get_env("WIFI_SSID", "yourssid"),
+         psk: System.get_env("WIFI_PSK", "yourpassword")
+       },
+       ipv4: %{
+         method: :dhcp
+       }
+     }}
   ]
 
 config :mdns_lite,
@@ -95,8 +95,8 @@ config :mdns_lite,
     }
   ]
 
-  config :expresso_firmware,
-    heater_module: ExpressoFirmware.GaggiaHeater
+config :expresso_firmware,
+  heater_module: ExpressoFirmware.GaggiaHeater
 
 # Import target specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
