@@ -60,12 +60,15 @@ defmodule ExpressoFirmware.StubHeater do
 
   @impl true
   def handle_info(:heater_loop, %HeaterState{} = state) do
-    reading = case state.heater do
-      :on ->
-        state.reading + (state.heating_delta_per_second / 100)
-      :off ->
-        state.reading - (state.cooling_delta_per_second / 100)
-    end
+    reading =
+      case state.heater do
+        :on ->
+          state.reading + state.heating_delta_per_second / 100
+
+        :off ->
+          state.reading - state.cooling_delta_per_second / 100
+      end
+
     override = reading > state.max_temp
     Process.send_after(self(), :heater_loop, state.heater_cycle_ms)
     {:noreply, struct(state, %{reading: reading, override: override})}
@@ -73,27 +76,24 @@ defmodule ExpressoFirmware.StubHeater do
 
   @impl true
   def handle_info(:pid_loop, %HeaterState{output: output} = state) do
-    Pigpiox.GPIO.write(state.pin, 1)
+    Circuits.GPIO.write(state.output_ref, 1)
     Process.send_after(self(), {:heater_off, output}, output)
     {:noreply, struct(state, %{heater: :on})}
   end
 
   @impl true
   def handle_info({:heater_off, output}, %HeaterState{} = state) do
-    Pigpiox.GPIO.write(state.pin, 0)
+    Circuits.GPIO.write(state.output_ref, 0)
     Process.send_after(self(), :pid_loop, state.pwm_cycle_ms - output)
     {:noreply, struct(state, %{heater: :off})}
   end
 
   def set_output(%HeaterState{override: true} = state, _output, _max_output) do
-    Pigpiox.GPIO.write(state.pin, 0)
+    Circuits.GPIO.write(state.output_ref, 0)
     0
   end
 
   def set_output(%HeaterState{} = state, output, max_output) do
     floor(output * state.pwm_cycle_ms / max_output)
   end
-
-
-
 end
