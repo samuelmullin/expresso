@@ -40,7 +40,17 @@ defmodule ExpressoFirmware.ControllerTest do
     assert %{restart: :permanent, type: :worker} = Controller.child_spec([])
   end
 
-  test "preserves explicit PID gains when autotune is disabled" do
+  test "init applies lambda gains when autotune enabled (no file)" do
+    # With no config file, autotune=true (default), gains are calculated
+    assert {:ok, state} = Controller.init([])
+    # Lambda gains applied: kp ≈ 45/55 ≈ 0.818
+    assert_in_delta state.kp, 45.0 / 55.0, 0.01
+    assert_in_delta state.brew_kp, 45.0 / 55.0, 0.01
+    # Active kp = brew_kp
+    assert state.kp == state.brew_kp
+  end
+
+  test "init uses brew_kp as active kp when autotune is disabled" do
     assert {:ok, state} = Controller.init(autotune_enabled: false, brew_kp: 12.0, brew_ki: 0.5, brew_kd: 1.25)
     assert state.kp == 12.0
     assert state.brew_kp == 12.0
@@ -355,6 +365,40 @@ defmodule ExpressoFirmware.ControllerTest do
       # Active gains = steam gains (steam switch is on)
       assert_in_delta new_state.kp, 45.0 / 60.0, 0.01
       assert_in_delta new_state.ki, 45.0 / 60.0 / 60.0, 0.001
+    end
+  end
+
+  describe "set_config brew anchor sync" do
+    test "set_config syncs brew_kp when kp is updated" do
+      state = %Controller.State{kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
+      assert new_state.kp == 1.5
+      assert new_state.brew_kp == 1.5
+    end
+
+    test "set_config syncs brew_ki when ki is updated" do
+      state = %Controller.State{ki: 0.015, brew_ki: 0.015}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [ki: 0.05]}, nil, state)
+      assert new_state.ki == 0.05
+      assert new_state.brew_ki == 0.05
+    end
+
+    test "set_config syncs brew_kd when kd is updated" do
+      state = %Controller.State{kd: 0.0, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kd: 2.0]}, nil, state)
+      assert new_state.kd == 2.0
+      assert new_state.brew_kd == 2.0
+    end
+
+    test "set_config does not change brew_kp when only other keys change" do
+      state = %Controller.State{kp: 0.82, brew_kp: 0.82, brew_setpoint: 93.5}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [brew_setpoint: 94.0]}, nil, state)
+      assert new_state.brew_kp == 0.82
+      assert new_state.brew_setpoint == 94.0
     end
   end
 end

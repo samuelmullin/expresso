@@ -3,6 +3,7 @@ defmodule ExpressoFirmware.Controller do
 
   require Logger
   alias Circuits.GPIO
+  alias ExpressoFirmware.Config
 
   @moduledoc """
   PID goes brrr
@@ -77,7 +78,6 @@ defmodule ExpressoFirmware.Controller do
   end
 
   def set_config(new_config), do: GenServer.call(__MODULE__, {:set_config, new_config})
-  def set_config(key, value), do: GenServer.call(__MODULE__, {:set_config, key, value})
   def get_state(), do: GenServer.call(__MODULE__, :get_state)
 
   @doc """
@@ -101,65 +101,72 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def init(config) do
-    # Open our brew and steam switches and set interrupts for the GPIO.  This will
-    # send an initial message so we can properly set the initial state.
     {:ok, brew_switch_ref} = GPIO.open(@brew_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(brew_switch_ref, :both)
     {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
-    autotune_enabled = Keyword.get(config, :autotune_enabled, true)
-
-    # Calculate PID gains using Lambda Tuning unless autotune is disabled or overridden in config
-    tau = Keyword.get(config, :tau_seconds, @default_tau_seconds)
-    lambda = Keyword.get(config, :lambda_seconds, @default_lambda_seconds)
-    process_gain = Keyword.get(config, :process_gain, @default_process_gain)
-
-    {kp, ki, kd} = calculate_lambda_gains(tau, lambda, process_gain)
-
-    Logger.info(
-      "Controller initialized with Lambda Tuning gains: " <>
-        "kp=#{Float.round(kp, 2)}, ki=#{Float.round(ki, 2)}, kd=#{kd} " <>
-        "(tau=#{tau}s, lambda=#{lambda}s)"
-    )
-
-    config_with_gains =
-      config
-      |> Keyword.put_new(:tau_seconds, tau)
-      |> Keyword.put_new(:process_gain, process_gain)
-
-    # When autotune is disabled, brew_kp/ki/kd from config are the source of truth
-    # and override Lambda-calculated gains
-    config_with_gains =
-      if autotune_enabled do
-        config_with_gains
-        |> Keyword.put_new(:kp, kp)
-        |> Keyword.put_new(:ki, ki)
-        |> Keyword.put_new(:kd, kd)
-        |> Keyword.put_new(:brew_kp, Keyword.get(config_with_gains, :kp, kp))
-        |> Keyword.put_new(:brew_ki, Keyword.get(config_with_gains, :ki, ki))
-        |> Keyword.put_new(:brew_kd, Keyword.get(config_with_gains, :kd, kd))
-      else
-        brew_kp = Keyword.get(config, :brew_kp, kp)
-        brew_ki = Keyword.get(config, :brew_ki, ki)
-        brew_kd = Keyword.get(config, :brew_kd, kd)
-
-        config_with_gains
-        |> Keyword.put_new(:brew_kp, brew_kp)
-        |> Keyword.put_new(:brew_ki, brew_ki)
-        |> Keyword.put_new(:brew_kd, brew_kd)
-        |> Keyword.put_new(:kp, brew_kp)
-        |> Keyword.put_new(:ki, brew_ki)
-        |> Keyword.put_new(:kd, brew_kd)
+    # File config wins over passed-in config for user-facing settings
+    file_config =
+      case Config.load() do
+        {:ok, map} -> map |> Map.to_list() |> Keyword.new()
+        _ -> []
       end
 
-    # Start control loop
+    merged = Keyword.merge(config, file_config)
+
+    autotune_enabled = Keyword.get(merged, :autotune_enabled, true)
+    tau = Keyword.get(merged, :tau_seconds, @default_tau_seconds)
+    lambda = Keyword.get(merged, :lambda_seconds, @default_lambda_seconds)
+    steam_lambda = Keyword.get(merged, :steam_lambda_seconds, @default_steam_lambda_seconds)
+    process_gain = Keyword.get(merged, :process_gain, @default_process_gain)
+
+    merged =
+      if autotune_enabled do
+        {brew_kp, brew_ki, brew_kd} = calculate_lambda_gains(tau, lambda, process_gain)
+        {steam_kp, steam_ki, steam_kd} = calculate_lambda_gains(tau, steam_lambda, process_gain)
+
+        Logger.info(
+          "Controller init: autotune=on " <>
+            "brew_kp=#{Float.round(brew_kp, 3)}, steam_kp=#{Float.round(steam_kp, 3)}, " <>
+            "brew_setpoint=#{Keyword.get(merged, :brew_setpoint, 101.0)}°C"
+        )
+
+        merged
+        |> Keyword.put(:brew_kp, brew_kp)
+        |> Keyword.put(:brew_ki, brew_ki)
+        |> Keyword.put(:brew_kd, brew_kd)
+        |> Keyword.put(:steam_kp, steam_kp)
+        |> Keyword.put(:steam_ki, steam_ki)
+        |> Keyword.put(:steam_kd, steam_kd)
+        # Active gains start as brew gains (not in steam or brew-boost mode at boot)
+        |> Keyword.put(:kp, brew_kp)
+        |> Keyword.put(:ki, brew_ki)
+        |> Keyword.put(:kd, brew_kd)
+      else
+        brew_kp = Keyword.get(merged, :brew_kp, 16.0)
+        brew_ki = Keyword.get(merged, :brew_ki, 2.5)
+        brew_kd = Keyword.get(merged, :brew_kd, 16.0)
+
+        Logger.info(
+          "Controller init: autotune=off " <>
+            "brew_kp=#{Float.round(brew_kp, 3)}, " <>
+            "brew_setpoint=#{Keyword.get(merged, :brew_setpoint, 101.0)}°C"
+        )
+
+        # Active gains = brew gains
+        merged
+        |> Keyword.put(:kp, brew_kp)
+        |> Keyword.put(:ki, brew_ki)
+        |> Keyword.put(:kd, brew_kd)
+      end
+
     Process.send_after(self(), :control_loop, 1000)
 
     {:ok,
      struct(
        State,
-       config_with_gains ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
+       merged ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
      )}
   end
 
@@ -169,8 +176,43 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_call({:set_config, new_config}, _, %State{} = state) do
-    state = struct(state, new_config)
-    {:reply, state, state}
+    # Keep brew anchor fields in sync when active gains are updated manually
+    synced =
+      new_config
+      |> then(fn cfg ->
+        if kp = cfg[:kp], do: Keyword.put_new(cfg, :brew_kp, kp), else: cfg
+      end)
+      |> then(fn cfg ->
+        if ki = cfg[:ki], do: Keyword.put_new(cfg, :brew_ki, ki), else: cfg
+      end)
+      |> then(fn cfg ->
+        if kd = cfg[:kd], do: Keyword.put_new(cfg, :brew_kd, kd), else: cfg
+      end)
+
+    new_state = struct(state, synced)
+
+    # Persist the updated config (log failure but don't crash)
+    persisted_keys = [
+      :autotune_enabled, :brew_kp, :brew_ki, :brew_kd,
+      :lambda_seconds, :tau_seconds, :process_gain,
+      :brew_setpoint, :steam_setpoint,
+      :brew_cooling_compensation_c, :brew_kp_multiplier,
+      :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds
+    ]
+
+    save_map =
+      persisted_keys
+      |> Enum.filter(&Keyword.has_key?(synced, &1))
+      |> Enum.into(%{}, fn k -> {k, Map.get(new_state, k)} end)
+
+    unless map_size(save_map) == 0 do
+      case Config.save(save_map) do
+        :ok -> :ok
+        {:error, reason} -> Logger.error("Config.save failed: #{inspect(reason)}")
+      end
+    end
+
+    {:reply, new_state, new_state}
   end
 
   @impl true
@@ -212,6 +254,20 @@ defmodule ExpressoFirmware.Controller do
         steam_kd: new_steam_kd,
         lambda_seconds: lambda_seconds
       )
+
+    Config.save(%{
+      brew_kp: new_brew_kp,
+      brew_ki: new_brew_ki,
+      brew_kd: new_brew_kd,
+      steam_kp: new_steam_kp,
+      steam_ki: new_steam_ki,
+      steam_kd: new_steam_kd,
+      lambda_seconds: lambda_seconds
+    })
+    |> case do
+      :ok -> :ok
+      {:error, reason} -> Logger.error("Config.save after autotune failed: #{inspect(reason)}")
+    end
 
     {:reply, {:ok, {new_brew_kp, new_brew_ki, new_brew_kd}}, new_state}
   end
