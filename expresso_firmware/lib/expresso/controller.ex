@@ -174,17 +174,46 @@ defmodule ExpressoFirmware.Controller do
   end
 
   @impl true
+  def handle_call({:autotune_lambda, _lambda_seconds}, _from, %State{autotune_enabled: false} = state) do
+    {:reply, {:error, :autotune_disabled}, state}
+  end
+
+  @impl true
   def handle_call({:autotune_lambda, lambda_seconds}, _from, state) do
-    {new_kp, new_ki, new_kd} =
+    {new_brew_kp, new_brew_ki, new_brew_kd} =
       calculate_lambda_gains(state.tau_seconds, lambda_seconds, state.process_gain)
+
+    {new_steam_kp, new_steam_ki, new_steam_kd} =
+      calculate_lambda_gains(state.tau_seconds, state.steam_lambda_seconds, state.process_gain)
+
+    # Apply to active gains based on which mode we're in
+    {active_kp, active_ki, active_kd} =
+      if state.steam_switch_state == :on do
+        {new_steam_kp, new_steam_ki, new_steam_kd}
+      else
+        {new_brew_kp, new_brew_ki, new_brew_kd}
+      end
 
     Logger.info(
       "Re-tuning with lambda=#{lambda_seconds}s: " <>
-        "new gains: kp=#{Float.round(new_kp, 2)}, ki=#{Float.round(new_ki, 2)}, kd=#{new_kd}"
+        "brew_kp=#{Float.round(new_brew_kp, 3)}, steam_kp=#{Float.round(new_steam_kp, 3)}"
     )
 
-    new_state = struct(state, kp: new_kp, ki: new_ki, kd: new_kd, brew_kp: new_kp, brew_ki: new_ki, brew_kd: new_kd)
-    {:reply, {new_kp, new_ki, new_kd}, new_state}
+    new_state =
+      struct(state,
+        kp: active_kp,
+        ki: active_ki,
+        kd: active_kd,
+        brew_kp: new_brew_kp,
+        brew_ki: new_brew_ki,
+        brew_kd: new_brew_kd,
+        steam_kp: new_steam_kp,
+        steam_ki: new_steam_ki,
+        steam_kd: new_steam_kd,
+        lambda_seconds: lambda_seconds
+      )
+
+    {:reply, {:ok, {new_brew_kp, new_brew_ki, new_brew_kd}}, new_state}
   end
 
   @impl true

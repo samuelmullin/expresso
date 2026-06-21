@@ -291,4 +291,70 @@ defmodule ExpressoFirmware.ControllerTest do
       assert new_state.error_sum == expected_error_sum
     end
   end
+
+  describe "autotune toggle" do
+    test "autotune_lambda returns :autotune_disabled when autotune is off" do
+      state = %Controller.State{autotune_enabled: false, brew_kp: 1.0, brew_ki: 0.01, brew_kd: 0.0}
+      assert {:reply, {:error, :autotune_disabled}, ^state} =
+               Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+    end
+
+    test "autotune_lambda updates both brew and steam gains when autotune is on" do
+      state = %Controller.State{
+        autotune_enabled: true,
+        tau_seconds: 45.0,
+        process_gain: 1.0,
+        steam_lambda_seconds: 15.0,
+        steam_switch_state: :off,
+        brew_kp: 0.5,
+        brew_ki: 0.01,
+        brew_kd: 0.0,
+        steam_kp: 0.4,
+        steam_ki: 0.008,
+        steam_kd: 0.0,
+        kp: 0.5,
+        ki: 0.01,
+        kd: 0.0
+      }
+
+      {:reply, {:ok, {new_kp, new_ki, new_kd}}, new_state} =
+        Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+
+      # Brew gains: tau=45, lambda=10 → kp = 45/55 ≈ 0.818
+      assert_in_delta new_kp, 45.0 / 55.0, 0.01
+      assert_in_delta new_ki, 45.0 / 55.0 / 55.0, 0.001
+      assert new_kd == 0
+
+      # Brew gains written to brew_kp/ki/kd
+      assert_in_delta new_state.brew_kp, 45.0 / 55.0, 0.01
+      assert_in_delta new_state.brew_ki, 45.0 / 55.0 / 55.0, 0.001
+
+      # Steam gains: tau=45, lambda=15 → kp = 45/60 = 0.75
+      assert_in_delta new_state.steam_kp, 45.0 / 60.0, 0.01
+      assert_in_delta new_state.steam_ki, 45.0 / 60.0 / 60.0, 0.001
+
+      # Active kp/ki/kd = brew gains (steam switch is off)
+      assert_in_delta new_state.kp, 45.0 / 55.0, 0.01
+    end
+
+    test "autotune_lambda applies steam gains as active when steam switch is on" do
+      state = %Controller.State{
+        autotune_enabled: true,
+        tau_seconds: 45.0,
+        process_gain: 1.0,
+        steam_lambda_seconds: 15.0,
+        steam_switch_state: :on,
+        brew_kp: 0.5, brew_ki: 0.01, brew_kd: 0.0,
+        steam_kp: 0.4, steam_ki: 0.008, steam_kd: 0.0,
+        kp: 0.4, ki: 0.008, kd: 0.0
+      }
+
+      {:reply, {:ok, _}, new_state} =
+        Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+
+      # Active gains = steam gains (steam switch is on)
+      assert_in_delta new_state.kp, 45.0 / 60.0, 0.01
+      assert_in_delta new_state.ki, 45.0 / 60.0 / 60.0, 0.001
+    end
+  end
 end
