@@ -42,6 +42,7 @@ defmodule ExpressoFirmware.MixProject do
       {:toolshed, "~> 0.5.0"},
       {:max31865, path: "../../max31865"},
       {:circuits_gpio, "~> 2.2"},
+      {:jason, "~> 1.4"},
       {:expresso_ui, path: "../expresso_ui"},
 
       # Dependencies for all targets except :host

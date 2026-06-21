@@ -12,12 +12,26 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
     previous_heater = Application.get_env(:expresso_firmware, :heater_module)
     Application.put_env(:expresso_firmware, :heater_module, TestHeater)
 
+    config_path =
+      Path.join(System.tmp_dir!(), "integration_test_#{System.unique_integer()}.json")
+
+    previous_config_path = Application.get_env(:expresso_firmware, :config_path)
+    Application.put_env(:expresso_firmware, :config_path, config_path)
+
     on_exit(fn ->
       if is_nil(previous_heater) do
         Application.delete_env(:expresso_firmware, :heater_module)
       else
         Application.put_env(:expresso_firmware, :heater_module, previous_heater)
       end
+
+      if is_nil(previous_config_path) do
+        Application.delete_env(:expresso_firmware, :config_path)
+      else
+        Application.put_env(:expresso_firmware, :config_path, previous_config_path)
+      end
+
+      File.rm(config_path)
     end)
   end
 
@@ -33,6 +47,19 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       kp: 16.0,
       ki: 2.5,
       kd: 16.0,
+      brew_kp: 16.0,
+      brew_ki: 2.5,
+      brew_kd: 16.0,
+      steam_kp: 0.75,
+      steam_ki: 0.0125,
+      steam_kd: 0.0,
+      steam_lambda_seconds: 15.0,
+      brew_cooling_compensation_c: 2.7,
+      brew_kp_multiplier: 1.2,
+      autotune_enabled: true,
+      lambda_seconds: 10.0,
+      tau_seconds: 45.0,
+      process_gain: 1.0,
       cycle_ms: 1000,
       max_integral: 20.0,
       min_output: 0,
@@ -150,6 +177,108 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       assert new_state.last_output == 100
       # Integral should be frozen (not increase beyond current value) due to anti-windup
       assert new_state.error_sum == state.error_sum
+    end
+  end
+
+  describe "steam mode gain switching" do
+    test "steam switch ON applies steam gains and setpoint" do
+      state = base_state(mode: :pid, initialized: true)
+
+      {:noreply, steam_state} = Controller.handle_info({:circuits_gpio, 17, 0, 0}, state)
+
+      assert steam_state.kp == state.steam_kp
+      assert steam_state.ki == state.steam_ki
+      assert steam_state.kd == state.steam_kd
+      assert steam_state.setpoint == state.steam_setpoint
+      assert steam_state.steam_switch_state == :on
+      assert steam_state.initialized == false
+    end
+
+    test "steam switch OFF restores brew gains and setpoint" do
+      state =
+        base_state(
+          mode: :pid,
+          steam_switch_state: :on,
+          setpoint: 155.0,
+          kp: 0.75,
+          ki: 0.0125,
+          kd: 0.0,
+          initialized: true
+        )
+
+      {:noreply, restored_state} = Controller.handle_info({:circuits_gpio, 17, 0, 1}, state)
+
+      assert restored_state.kp == state.brew_kp
+      assert restored_state.ki == state.brew_ki
+      assert restored_state.kd == state.brew_kd
+      assert restored_state.setpoint == state.brew_setpoint
+      assert restored_state.steam_switch_state == :off
+      assert restored_state.initialized == false
+    end
+
+    test "brew switch ON after steam OFF uses brew_kp anchor (not steam gains)" do
+      state = base_state(mode: :pid, steam_switch_state: :off)
+
+      {:noreply, brew_state} = Controller.handle_info({:circuits_gpio, 27, 0, 0}, state)
+
+      assert_in_delta brew_state.kp, state.brew_kp * state.brew_kp_multiplier, 0.01
+      refute brew_state.kp == state.steam_kp
+    end
+  end
+
+  describe "autotune toggle" do
+    test "autotune_lambda is no-op when autotune disabled" do
+      state = base_state(autotune_enabled: false, brew_kp: 1.5, brew_ki: 0.05)
+
+      {:reply, result, new_state} =
+        Controller.handle_call({:autotune_lambda, 8.0}, nil, state)
+
+      assert result == {:error, :autotune_disabled}
+      assert new_state.brew_kp == 1.5
+      assert new_state.brew_ki == 0.05
+    end
+
+    test "set_config can disable autotune and it persists in state" do
+      state = base_state(autotune_enabled: true)
+
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [autotune_enabled: false]}, nil, state)
+
+      assert new_state.autotune_enabled == false
+    end
+  end
+
+  describe "set_config brew anchor sync" do
+    test "manual kp change through set_config updates brew_kp anchor (autotune off)" do
+      state = base_state(autotune_enabled: false, kp: 0.82, brew_kp: 0.82)
+
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
+
+      assert new_state.kp == 1.5
+      assert new_state.brew_kp == 1.5
+    end
+
+    test "brew boost after manual kp uses new manual value as anchor (autotune off)" do
+      state = base_state(autotune_enabled: false, kp: 1.5, brew_kp: 1.5, brew_switch_state: :off, mode: :pid)
+
+      {:reply, updated_state, updated_state} =
+        Controller.handle_call({:set_config, [kp: 2.0]}, nil, state)
+
+      {:noreply, brew_state} =
+        Controller.handle_info({:circuits_gpio, 27, 0, 0}, updated_state)
+
+      assert_in_delta brew_state.kp, 2.0 * updated_state.brew_kp_multiplier, 0.01
+    end
+
+    test "set_config with gain fields is ignored when autotune is enabled" do
+      state = base_state(autotune_enabled: true, kp: 0.82, brew_kp: 0.82)
+
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
+
+      assert new_state.kp == 0.82
+      assert new_state.brew_kp == 0.82
     end
   end
 end

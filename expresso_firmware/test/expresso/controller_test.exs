@@ -40,11 +40,20 @@ defmodule ExpressoFirmware.ControllerTest do
     assert %{restart: :permanent, type: :worker} = Controller.child_spec([])
   end
 
-  test "preserves explicit PID gains passed to init" do
-    assert {:ok, state} = Controller.init(kp: 12.0, ki: 0.5, kd: 1.25)
+  test "init applies lambda gains when autotune enabled (no file)" do
+    # With no config file, autotune=true (default), gains are calculated
+    assert {:ok, state} = Controller.init([])
+    # Lambda gains applied: kp ≈ 45/55 ≈ 0.818
+    assert_in_delta state.kp, 45.0 / 55.0, 0.01
+    assert_in_delta state.brew_kp, 45.0 / 55.0, 0.01
+    # Active kp = brew_kp
+    assert state.kp == state.brew_kp
+  end
 
+  test "init uses brew_kp as active kp when autotune is disabled" do
+    assert {:ok, state} = Controller.init(autotune_enabled: false, brew_kp: 12.0, brew_ki: 0.5, brew_kd: 1.25)
     assert state.kp == 12.0
-    assert state.base_kp == 12.0
+    assert state.brew_kp == 12.0
     assert state.ki == 0.5
     assert state.kd == 1.25
   end
@@ -100,7 +109,9 @@ defmodule ExpressoFirmware.ControllerTest do
         brew_setpoint: 93.5,
         setpoint: 93.5,
         kp: 16.0,
-        base_kp: 16.0,
+        brew_kp: 16.0,
+        brew_ki: 2.5,
+        brew_kd: 16.0,
         error_sum: 10.0,
         last_error: 2.0,
         initialized: true
@@ -124,7 +135,9 @@ defmodule ExpressoFirmware.ControllerTest do
         brew_setpoint: 93.5,
         setpoint: 93.5,
         kp: 16.0,
-        base_kp: 16.0,
+        brew_kp: 16.0,
+        brew_ki: 2.5,
+        brew_kd: 16.0,
         ki: 2.5,
         kd: 16.0,
         error_sum: 0.0,
@@ -147,8 +160,8 @@ defmodule ExpressoFirmware.ControllerTest do
       # Mode should be :pid (not :pwm)
       assert new_state.mode == :pid
 
-      # Kp should be boosted by 1.2× from base_kp (not from current kp, to prevent compounding)
-      assert_in_delta(new_state.kp, state.base_kp * 1.2, 0.01)
+      # Kp should be boosted by 1.2× from brew_kp (not from current kp, to prevent compounding)
+      assert_in_delta(new_state.kp, state.brew_kp * 1.2, 0.01)
 
       # Integral should be reset to prevent windup
       assert new_state.error_sum == 0.0
@@ -164,7 +177,9 @@ defmodule ExpressoFirmware.ControllerTest do
         setpoint: 96.2,
         # boosted
         kp: 16.0 * 1.2,
-        base_kp: 16.0,
+        brew_kp: 16.0,
+        brew_ki: 2.5,
+        brew_kd: 16.0,
         ki: 2.5,
         kd: 16.0,
         error_sum: 0.0,
@@ -182,8 +197,8 @@ defmodule ExpressoFirmware.ControllerTest do
       # Setpoint should return to brew setpoint (no more compensation)
       assert new_state.setpoint == 93.5
 
-      # Kp should be restored to base_kp (not divided, to prevent permanent drift on bounce)
-      assert_in_delta(new_state.kp, state.base_kp, 0.01)
+      # Kp should be restored to brew_kp (not divided, to prevent permanent drift on bounce)
+      assert_in_delta(new_state.kp, state.brew_kp, 0.01)
 
       # Mode should remain :pid
       assert new_state.mode == :pid
@@ -284,6 +299,138 @@ defmodule ExpressoFirmware.ControllerTest do
       # frozen value + new error
       expected_error_sum = 20.0 + 1.0
       assert new_state.error_sum == expected_error_sum
+    end
+  end
+
+  describe "autotune toggle" do
+    test "autotune_lambda returns :autotune_disabled when autotune is off" do
+      state = %Controller.State{autotune_enabled: false, brew_kp: 1.0, brew_ki: 0.01, brew_kd: 0.0}
+      assert {:reply, {:error, :autotune_disabled}, ^state} =
+               Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+    end
+
+    test "autotune_lambda updates both brew and steam gains when autotune is on" do
+      state = %Controller.State{
+        autotune_enabled: true,
+        tau_seconds: 45.0,
+        process_gain: 1.0,
+        steam_lambda_seconds: 15.0,
+        steam_switch_state: :off,
+        brew_kp: 0.5,
+        brew_ki: 0.01,
+        brew_kd: 0.0,
+        steam_kp: 0.4,
+        steam_ki: 0.008,
+        steam_kd: 0.0,
+        kp: 0.5,
+        ki: 0.01,
+        kd: 0.0
+      }
+
+      {:reply, {:ok, {new_kp, new_ki, new_kd}}, new_state} =
+        Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+
+      # Brew gains: tau=45, lambda=10 → kp = 45/55 ≈ 0.818
+      assert_in_delta new_kp, 45.0 / 55.0, 0.01
+      assert_in_delta new_ki, 45.0 / 55.0 / 55.0, 0.001
+      assert new_kd == 0
+
+      # Brew gains written to brew_kp/ki/kd
+      assert_in_delta new_state.brew_kp, 45.0 / 55.0, 0.01
+      assert_in_delta new_state.brew_ki, 45.0 / 55.0 / 55.0, 0.001
+
+      # Steam gains: tau=45, lambda=15 → kp = 45/60 = 0.75
+      assert_in_delta new_state.steam_kp, 45.0 / 60.0, 0.01
+      assert_in_delta new_state.steam_ki, 45.0 / 60.0 / 60.0, 0.001
+
+      # Active kp/ki/kd = brew gains (steam switch is off)
+      assert_in_delta new_state.kp, 45.0 / 55.0, 0.01
+    end
+
+    test "autotune_lambda applies steam gains as active when steam switch is on" do
+      state = %Controller.State{
+        autotune_enabled: true,
+        tau_seconds: 45.0,
+        process_gain: 1.0,
+        steam_lambda_seconds: 15.0,
+        steam_switch_state: :on,
+        brew_kp: 0.5, brew_ki: 0.01, brew_kd: 0.0,
+        steam_kp: 0.4, steam_ki: 0.008, steam_kd: 0.0,
+        kp: 0.4, ki: 0.008, kd: 0.0
+      }
+
+      {:reply, {:ok, _}, new_state} =
+        Controller.handle_call({:autotune_lambda, 10.0}, nil, state)
+
+      # Active gains = steam gains (steam switch is on)
+      assert_in_delta new_state.kp, 45.0 / 60.0, 0.01
+      assert_in_delta new_state.ki, 45.0 / 60.0 / 60.0, 0.001
+    end
+  end
+
+  describe "set_config brew anchor sync" do
+    test "set_config syncs brew_kp when kp is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
+      assert new_state.kp == 1.5
+      assert new_state.brew_kp == 1.5
+    end
+
+    test "set_config syncs brew_ki when ki is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, ki: 0.015, brew_ki: 0.015}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [ki: 0.05]}, nil, state)
+      assert new_state.ki == 0.05
+      assert new_state.brew_ki == 0.05
+    end
+
+    test "set_config syncs brew_kd when kd is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, kd: 0.0, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kd: 2.0]}, nil, state)
+      assert new_state.kd == 2.0
+      assert new_state.brew_kd == 2.0
+    end
+
+    test "set_config does not change brew_kp when only non-gain keys change" do
+      state = %Controller.State{kp: 0.82, brew_kp: 0.82, brew_setpoint: 93.5}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [brew_setpoint: 94.0]}, nil, state)
+      assert new_state.brew_kp == 0.82
+      assert new_state.brew_setpoint == 94.0
+    end
+
+    test "set_config ignores gain fields when autotune is enabled" do
+      state = %Controller.State{autotune_enabled: true, kp: 0.82, brew_kp: 0.82}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5, brew_setpoint: 94.0]}, nil, state)
+      # Gain blocked — kp and brew_kp unchanged
+      assert new_state.kp == 0.82
+      assert new_state.brew_kp == 0.82
+      # Non-gain field still applied
+      assert new_state.brew_setpoint == 94.0
+    end
+
+    test "set_config enabling autotune in the same call blocks gains from that same call" do
+      state = %Controller.State{autotune_enabled: false, kp: 0.82, brew_kp: 0.82}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [autotune_enabled: true, kp: 5.0]}, nil, state)
+      # autotune enabled
+      assert new_state.autotune_enabled == true
+      # kp not overridden — effective autotune was true for this call
+      assert new_state.kp == 0.82
+    end
+
+    test "set_config disabling autotune and setting gains in one call applies both" do
+      state = %Controller.State{autotune_enabled: true, kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [autotune_enabled: false, kp: 1.5]}, nil, state)
+      # autotune disabled
+      assert new_state.autotune_enabled == false
+      # gain applied because effective autotune is now false
+      assert new_state.kp == 1.5
+      assert new_state.brew_kp == 1.5
     end
   end
 end
