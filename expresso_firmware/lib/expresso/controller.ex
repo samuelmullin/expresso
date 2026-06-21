@@ -4,6 +4,7 @@ defmodule ExpressoFirmware.Controller do
   require Logger
   alias Circuits.GPIO
   alias ExpressoFirmware.Config
+  alias ExpressoFirmware.History
 
   @moduledoc """
   PID goes brrr
@@ -17,6 +18,8 @@ defmodule ExpressoFirmware.Controller do
   @default_lambda_seconds 10.0
   @default_steam_lambda_seconds 15.0
   @default_process_gain 1.0
+  @history_max 600
+  @history_flush_every 30
 
   # Keys that are safe to persist to / load from the config file.
   # Runtime-only State fields (mode, initialized, brew_switch_state, error_sum, etc.) are excluded.
@@ -71,7 +74,10 @@ defmodule ExpressoFirmware.Controller do
               last_error: 0,
               last_output: 0,
               error_sum: 0.0,
-              initialized: false
+              initialized: false,
+              history: :queue.new(),
+              history_count: 0,
+              history_flush_counter: 0
   end
 
   # --- Public API ---
@@ -92,6 +98,7 @@ defmodule ExpressoFirmware.Controller do
 
   def set_config(new_config), do: GenServer.call(__MODULE__, {:set_config, new_config})
   def get_state(), do: GenServer.call(__MODULE__, :get_state)
+  def get_history(), do: GenServer.call(__MODULE__, :get_history)
 
   @doc """
   Calculate PID gains using Lambda Tuning method.
@@ -176,18 +183,40 @@ defmodule ExpressoFirmware.Controller do
         |> Keyword.put(:kd, brew_kd)
       end
 
+    {history_queue, history_count} =
+      case History.load() do
+        {:ok, samples} ->
+          trimmed = Enum.take(samples, -@history_max)
+
+          {Enum.reduce(trimmed, :queue.new(), fn sample, q -> :queue.in(sample, q) end),
+           length(trimmed)}
+
+        _ ->
+          {:queue.new(), 0}
+      end
+
     Process.send_after(self(), :control_loop, 1000)
 
     {:ok,
      struct(
        State,
-       merged ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
+       merged ++
+         [
+           brew_switch_ref: brew_switch_ref,
+           steam_switch_ref: steam_switch_ref,
+           history: history_queue,
+           history_count: history_count,
+           history_flush_counter: 0
+         ]
      )}
   end
 
   # --- Callbacks ---
   @impl true
   def handle_call(:get_state, _from, state), do: {:reply, state, state}
+
+  @impl true
+  def handle_call(:get_history, _from, state), do: {:reply, :queue.to_list(state.history), state}
 
   @impl true
   def handle_call({:set_config, new_config}, _, %State{} = state) do
@@ -449,6 +478,8 @@ defmodule ExpressoFirmware.Controller do
 
     heater().set_output(output, state.max_output)
 
+    state = record_sample(state, reading, output)
+
     Process.send_after(self(), :control_loop, state.cycle_ms)
 
     {:noreply, state}
@@ -486,6 +517,7 @@ defmodule ExpressoFirmware.Controller do
   def terminate(reason, %State{} = state) do
     Logger.error("Controller terminating; forcing heater off. Reason: #{inspect(reason)}")
     shutdown_heater(state)
+    flush_history(state)
     :ok
   end
 
@@ -503,6 +535,48 @@ defmodule ExpressoFirmware.Controller do
   defp clamp_integral(integral, _), do: integral
 
   defp get_reading(), do: heater().get_reading()
+
+  defp record_sample(state, reading, output) do
+    flush_counter = state.history_flush_counter + 1
+
+    sample = %{
+      t: System.os_time(:millisecond),
+      temp: reading * 1.0,
+      sp: state.setpoint * 1.0,
+      out: output,
+      mode: state.mode
+    }
+
+    {q, count} =
+      if state.history_count >= @history_max do
+        {{:value, _oldest}, new_q} = :queue.out(state.history)
+        {new_q, state.history_count}
+      else
+        {state.history, state.history_count + 1}
+      end
+
+    new_state =
+      struct(state,
+        history: :queue.in(sample, q),
+        history_count: count,
+        history_flush_counter: rem(flush_counter, @history_flush_every)
+      )
+
+    if flush_counter >= @history_flush_every do
+      flush_history(new_state)
+    else
+      new_state
+    end
+  end
+
+  defp flush_history(state) do
+    case History.save(:queue.to_list(state.history)) do
+      :ok -> :ok
+      {:error, reason} -> Logger.error("History.save failed: #{inspect(reason)}")
+    end
+
+    state
+  end
 
   defp brew_pid_state(state) do
     struct(state,

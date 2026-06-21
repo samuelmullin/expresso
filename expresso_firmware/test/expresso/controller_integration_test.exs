@@ -18,6 +18,12 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
     previous_config_path = Application.get_env(:expresso_firmware, :config_path)
     Application.put_env(:expresso_firmware, :config_path, config_path)
 
+    history_path =
+      Path.join(System.tmp_dir!(), "integration_history_test_#{System.unique_integer()}.json")
+
+    previous_history_path = Application.get_env(:expresso_firmware, :history_path)
+    Application.put_env(:expresso_firmware, :history_path, history_path)
+
     on_exit(fn ->
       if is_nil(previous_heater) do
         Application.delete_env(:expresso_firmware, :heater_module)
@@ -31,7 +37,15 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
         Application.put_env(:expresso_firmware, :config_path, previous_config_path)
       end
 
+      if is_nil(previous_history_path) do
+        Application.delete_env(:expresso_firmware, :history_path)
+      else
+        Application.put_env(:expresso_firmware, :history_path, previous_history_path)
+      end
+
       File.rm(config_path)
+      File.rm(history_path)
+      File.rm(history_path <> ".tmp")
     end)
   end
 
@@ -71,8 +85,12 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       last_error: 0,
       last_output: 0,
       error_sum: 0.0,
-      initialized: false
+      initialized: false,
+      history: :queue.new(),
+      history_count: 0,
+      history_flush_counter: 0
     }
+
     struct(defaults, overrides)
   end
 
@@ -279,6 +297,41 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
 
       assert new_state.kp == 0.82
       assert new_state.brew_kp == 0.82
+    end
+  end
+
+  describe "history persistence" do
+    test "History.load returns persisted samples used by controller init" do
+      sample = %{"t" => 999, "temp" => 95.0, "sp" => 93.5, "out" => 45, "mode" => "pid"}
+      history_path = Application.fetch_env!(:expresso_firmware, :history_path)
+      File.write!(history_path, Jason.encode!([sample]))
+
+      {:ok, samples} = ExpressoFirmware.History.load()
+
+      assert [%{t: 999, temp: 95.0, sp: 93.5, out: 45, mode: :pid}] = samples
+    end
+
+    test "get_history returns empty list when no samples recorded" do
+      state = base_state(mode: :disabled)
+
+      {:reply, samples, _} = Controller.handle_call(:get_history, nil, state)
+
+      assert samples == []
+    end
+
+    test "multi-cycle PID run accumulates samples in history" do
+      state = base_state(mode: :pid, initialized: true)
+
+      {:noreply, s1} = Controller.handle_info(:control_loop, state)
+      {:noreply, s2} = Controller.handle_info(:control_loop, s1)
+      {:noreply, s3} = Controller.handle_info(:control_loop, s2)
+
+      assert s3.history_count == 3
+      {:reply, samples, _} = Controller.handle_call(:get_history, nil, s3)
+      assert length(samples) == 3
+      [a, b, c] = samples
+      assert a.t <= b.t
+      assert b.t <= c.t
     end
   end
 end
