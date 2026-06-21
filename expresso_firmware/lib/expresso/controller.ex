@@ -27,6 +27,10 @@ defmodule ExpressoFirmware.Controller do
     :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds
   ]
 
+  # Gain fields owned by the autotune system. When autotune is enabled, set_config
+  # rejects changes to these — they are controlled exclusively by autotune_lambda.
+  @autotune_managed_keys [:kp, :ki, :kd, :brew_kp, :brew_ki, :brew_kd, :steam_kp, :steam_ki, :steam_kd]
+
   defmodule State do
     defstruct kp: 16.0,
               ki: 2.5,
@@ -187,6 +191,23 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_call({:set_config, new_config}, _, %State{} = state) do
+    # When autotune is enabled, reject attempts to set gain fields it owns
+    new_config =
+      if state.autotune_enabled do
+        {blocked, allowed} = Enum.split_with(new_config, fn {k, _} -> k in @autotune_managed_keys end)
+
+        if blocked != [] do
+          Logger.warning(
+            "set_config: ignoring #{inspect(Keyword.keys(blocked))} — managed by autotune. " <>
+              "Disable autotune or call autotune_lambda/1 to update gains."
+          )
+        end
+
+        allowed
+      else
+        new_config
+      end
+
     # Keep brew anchor fields in sync when active gains are updated manually
     synced =
       new_config

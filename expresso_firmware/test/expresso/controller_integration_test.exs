@@ -249,8 +249,8 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
   end
 
   describe "set_config brew anchor sync" do
-    test "manual kp change through set_config updates brew_kp anchor" do
-      state = base_state(kp: 0.82, brew_kp: 0.82)
+    test "manual kp change through set_config updates brew_kp anchor (autotune off)" do
+      state = base_state(autotune_enabled: false, kp: 0.82, brew_kp: 0.82)
 
       {:reply, new_state, new_state} =
         Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
@@ -259,8 +259,8 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       assert new_state.brew_kp == 1.5
     end
 
-    test "brew boost after manual kp uses new manual value as anchor" do
-      state = base_state(kp: 1.5, brew_kp: 1.5, brew_switch_state: :off, mode: :pid)
+    test "brew boost after manual kp uses new manual value as anchor (autotune off)" do
+      state = base_state(autotune_enabled: false, kp: 1.5, brew_kp: 1.5, brew_switch_state: :off, mode: :pid)
 
       {:reply, updated_state, updated_state} =
         Controller.handle_call({:set_config, [kp: 2.0]}, nil, state)
@@ -269,6 +269,16 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
         Controller.handle_info({:circuits_gpio, 27, 0, 0}, updated_state)
 
       assert_in_delta brew_state.kp, 2.0 * updated_state.brew_kp_multiplier, 0.01
+    end
+
+    test "set_config with gain fields is ignored when autotune is enabled" do
+      state = base_state(autotune_enabled: true, kp: 0.82, brew_kp: 0.82)
+
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
+
+      assert new_state.kp == 0.82
+      assert new_state.brew_kp == 0.82
     end
   end
 end

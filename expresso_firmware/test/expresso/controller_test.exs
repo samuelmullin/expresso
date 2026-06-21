@@ -369,35 +369,46 @@ defmodule ExpressoFirmware.ControllerTest do
   end
 
   describe "set_config brew anchor sync" do
-    test "set_config syncs brew_kp when kp is updated" do
-      state = %Controller.State{kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
+    test "set_config syncs brew_kp when kp is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
       {:reply, new_state, new_state} =
         Controller.handle_call({:set_config, [kp: 1.5]}, nil, state)
       assert new_state.kp == 1.5
       assert new_state.brew_kp == 1.5
     end
 
-    test "set_config syncs brew_ki when ki is updated" do
-      state = %Controller.State{ki: 0.015, brew_ki: 0.015}
+    test "set_config syncs brew_ki when ki is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, ki: 0.015, brew_ki: 0.015}
       {:reply, new_state, new_state} =
         Controller.handle_call({:set_config, [ki: 0.05]}, nil, state)
       assert new_state.ki == 0.05
       assert new_state.brew_ki == 0.05
     end
 
-    test "set_config syncs brew_kd when kd is updated" do
-      state = %Controller.State{kd: 0.0, brew_kd: 0.0}
+    test "set_config syncs brew_kd when kd is updated (autotune off)" do
+      state = %Controller.State{autotune_enabled: false, kd: 0.0, brew_kd: 0.0}
       {:reply, new_state, new_state} =
         Controller.handle_call({:set_config, [kd: 2.0]}, nil, state)
       assert new_state.kd == 2.0
       assert new_state.brew_kd == 2.0
     end
 
-    test "set_config does not change brew_kp when only other keys change" do
+    test "set_config does not change brew_kp when only non-gain keys change" do
       state = %Controller.State{kp: 0.82, brew_kp: 0.82, brew_setpoint: 93.5}
       {:reply, new_state, new_state} =
         Controller.handle_call({:set_config, [brew_setpoint: 94.0]}, nil, state)
       assert new_state.brew_kp == 0.82
+      assert new_state.brew_setpoint == 94.0
+    end
+
+    test "set_config ignores gain fields when autotune is enabled" do
+      state = %Controller.State{autotune_enabled: true, kp: 0.82, brew_kp: 0.82}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [kp: 1.5, brew_setpoint: 94.0]}, nil, state)
+      # Gain blocked — kp and brew_kp unchanged
+      assert new_state.kp == 0.82
+      assert new_state.brew_kp == 0.82
+      # Non-gain field still applied
       assert new_state.brew_setpoint == 94.0
     end
   end
