@@ -13,7 +13,8 @@ defmodule ExpressoFirmware.Controller do
 
   @brew_cooling_rate_c_per_sec 0.1
   @typical_brew_duration_sec 27
-  @brew_cooling_compensation_c @brew_cooling_rate_c_per_sec * @typical_brew_duration_sec  # ~2.7°C
+  # ~2.7°C
+  @brew_cooling_compensation_c @brew_cooling_rate_c_per_sec * @typical_brew_duration_sec
   @brew_kp_multiplier 1.2
 
   # Lambda Tuning parameters
@@ -72,8 +73,12 @@ defmodule ExpressoFirmware.Controller do
   @doc """
   Calculate PID gains using Lambda Tuning method.
   """
-  def calculate_lambda_gains(tau_seconds \\ @default_tau_seconds, lambda_seconds \\ @default_lambda_seconds, process_gain \\ @default_process_gain) do
-    kp = (1 / process_gain) * (tau_seconds / (lambda_seconds + tau_seconds))
+  def calculate_lambda_gains(
+        tau_seconds \\ @default_tau_seconds,
+        lambda_seconds \\ @default_lambda_seconds,
+        process_gain \\ @default_process_gain
+      ) do
+    kp = 1 / process_gain * (tau_seconds / (lambda_seconds + tau_seconds))
     ki = kp / (tau_seconds + lambda_seconds)
     kd = 0
 
@@ -102,18 +107,20 @@ defmodule ExpressoFirmware.Controller do
 
     Logger.info(
       "Controller initialized with Lambda Tuning gains: " <>
-      "kp=#{Float.round(kp, 2)}, ki=#{Float.round(ki, 2)}, kd=#{kd} " <>
-      "(tau=#{tau}s, lambda=#{lambda}s)"
+        "kp=#{Float.round(kp, 2)}, ki=#{Float.round(ki, 2)}, kd=#{kd} " <>
+        "(tau=#{tau}s, lambda=#{lambda}s)"
     )
 
     config_with_gains =
       config
-      |> Keyword.put(:kp, kp)
-      |> Keyword.put(:ki, ki)
-      |> Keyword.put(:kd, kd)
-      |> Keyword.put(:base_kp, kp)  # anchor for brew boost/restore
-      |> Keyword.put(:tau_seconds, tau)
-      |> Keyword.put(:process_gain, process_gain)
+      |> Keyword.put_new(:kp, kp)
+      |> Keyword.put_new(:ki, ki)
+      |> Keyword.put_new(:kd, kd)
+      |> Keyword.put_new(:tau_seconds, tau)
+      |> Keyword.put_new(:process_gain, process_gain)
+
+    config_with_gains =
+      Keyword.put_new(config_with_gains, :base_kp, Keyword.fetch!(config_with_gains, :kp))
 
     # Start control loop
     Process.send_after(self(), :control_loop, 1000)
@@ -137,11 +144,12 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_call({:autotune_lambda, lambda_seconds}, _from, state) do
-    {new_kp, new_ki, new_kd} = calculate_lambda_gains(state.tau_seconds, lambda_seconds, state.process_gain)
+    {new_kp, new_ki, new_kd} =
+      calculate_lambda_gains(state.tau_seconds, lambda_seconds, state.process_gain)
 
     Logger.info(
       "Re-tuning with lambda=#{lambda_seconds}s: " <>
-      "new gains: kp=#{Float.round(new_kp, 2)}, ki=#{Float.round(new_ki, 2)}, kd=#{new_kd}"
+        "new gains: kp=#{Float.round(new_kp, 2)}, ki=#{Float.round(new_ki, 2)}, kd=#{new_kd}"
     )
 
     new_state = struct(state, kp: new_kp, ki: new_ki, kd: new_kd, base_kp: new_kp)
@@ -152,13 +160,10 @@ defmodule ExpressoFirmware.Controller do
   def handle_cast(:enable_pid, %State{} = state) do
     Logger.info("Enabling PID")
 
-    mode =
-      case state.brew_switch_state do
-        :on -> :pwm
-        :off -> :pid
-      end
-
-    {:noreply, struct(state, mode: mode, initialized: false)}
+    case state.brew_switch_state do
+      :on -> {:noreply, brew_pid_state(state)}
+      :off -> {:noreply, struct(state, mode: :pid, initialized: false)}
+    end
   end
 
   @impl true
@@ -173,18 +178,21 @@ defmodule ExpressoFirmware.Controller do
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 1}, state) do
     Logger.info(
       "Brew switch OFF - returning to normal PID. " <>
-      "Restore setpoint to #{state.brew_setpoint}°C and Kp to normal"
+        "Restore setpoint to #{state.brew_setpoint}°C and Kp to normal"
     )
 
-    normal_state = struct(state,
-      brew_switch_state: :off,
-      mode: :pid,
-      initialized: false,  # Re-initialize PID for new setpoint
-      setpoint: state.brew_setpoint,
-      kp: state.base_kp,  # Restore original Kp
-      error_sum: 0.0,
-      last_error: 0
-    )
+    normal_state =
+      struct(state,
+        brew_switch_state: :off,
+        mode: :pid,
+        # Re-initialize PID for new setpoint
+        initialized: false,
+        setpoint: state.brew_setpoint,
+        # Restore original Kp
+        kp: state.base_kp,
+        error_sum: 0.0,
+        last_error: 0
+      )
 
     {:noreply, normal_state}
   end
@@ -193,33 +201,27 @@ defmodule ExpressoFirmware.Controller do
   def handle_info({:circuits_gpio, @brew_switch_pin, _timestamp, 0}, state) do
     Logger.info(
       "Brew switch ON - activating PID with feedforward compensation. " <>
-      "Boost setpoint by #{@brew_cooling_compensation_c}°C and Kp by #{@brew_kp_multiplier}×"
+        "Boost setpoint by #{@brew_cooling_compensation_c}°C and Kp by #{@brew_kp_multiplier}×"
     )
 
     # Enter PID mode (not PWM) with boosted setpoint and Kp to compensate for measured cooling
-    boosted_state = struct(state,
-      brew_switch_state: :on,
-      mode: :pid,
-      initialized: false,  # Re-initialize PID for new setpoint
-      setpoint: state.brew_setpoint + @brew_cooling_compensation_c,
-      kp: state.base_kp * @brew_kp_multiplier,
-      error_sum: 0.0,
-      last_error: 0
-    )
-
-    {:noreply, boosted_state}
+    {:noreply, brew_pid_state(state)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 1}, state) do
     Logger.info("Steam switch set to :off, changing setpoint to brew temp")
-    {:noreply, struct(state, steam_switch_state: :off, setpoint: state.brew_setpoint, initialized: false)}
+
+    {:noreply,
+     struct(state, steam_switch_state: :off, setpoint: state.brew_setpoint, initialized: false)}
   end
 
   @impl true
   def handle_info({:circuits_gpio, @steam_switch_pin, _timestamp, 0}, state) do
     Logger.info("Steam switch set to :on, changing setpoint to steam temp")
-    {:noreply, struct(state, steam_switch_state: :on, setpoint: state.steam_setpoint, initialized: false)}
+
+    {:noreply,
+     struct(state, steam_switch_state: :on, setpoint: state.steam_setpoint, initialized: false)}
   end
 
   @impl true
@@ -259,7 +261,8 @@ defmodule ExpressoFirmware.Controller do
     # Anti-windup: only accumulate integral if output is NOT saturated
     error_sum =
       if unclamped_output >= state.max_output or unclamped_output <= state.min_output do
-        state.error_sum  # Hold integral constant when saturated
+        # Hold integral constant when saturated
+        state.error_sum
       else
         clamp_integral(state.error_sum + error, state.max_integral)
       end
@@ -290,7 +293,7 @@ defmodule ExpressoFirmware.Controller do
   def handle_info(:control_loop, %State{mode: :pwm} = state) do
     Logger.warning(
       "PWM mode is deprecated. Brew phase now uses intelligent PID with feedforward. " <>
-      "Treating as :pid mode."
+        "Treating as :pid mode."
     )
 
     # Delegate to PID mode handler (will handle the next control loop)
@@ -335,6 +338,18 @@ defmodule ExpressoFirmware.Controller do
   defp clamp_integral(integral, _), do: integral
 
   defp get_reading(), do: heater().get_reading()
+
+  defp brew_pid_state(state) do
+    struct(state,
+      brew_switch_state: :on,
+      mode: :pid,
+      initialized: false,
+      setpoint: state.brew_setpoint + @brew_cooling_compensation_c,
+      kp: state.base_kp * @brew_kp_multiplier,
+      error_sum: 0.0,
+      last_error: 0
+    )
+  end
 
   defp shutdown_heater(state) do
     heater().set_output(0, state.max_output)

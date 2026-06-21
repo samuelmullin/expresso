@@ -40,6 +40,15 @@ defmodule ExpressoFirmware.ControllerTest do
     assert %{restart: :permanent, type: :worker} = Controller.child_spec([])
   end
 
+  test "preserves explicit PID gains passed to init" do
+    assert {:ok, state} = Controller.init(kp: 12.0, ki: 0.5, kd: 1.25)
+
+    assert state.kp == 12.0
+    assert state.base_kp == 12.0
+    assert state.ki == 0.5
+    assert state.kd == 1.25
+  end
+
   test "forces heater output off when the controller terminates" do
     state = %Controller.State{max_output: 100}
 
@@ -84,6 +93,30 @@ defmodule ExpressoFirmware.ControllerTest do
 
   describe "brew phase feedforward compensation" do
     @tag :brew_phase
+    test "enable_pid while brew switch is on applies feedforward PID compensation" do
+      state = %Controller.State{
+        mode: :disabled,
+        brew_switch_state: :on,
+        brew_setpoint: 93.5,
+        setpoint: 93.5,
+        kp: 16.0,
+        base_kp: 16.0,
+        error_sum: 10.0,
+        last_error: 2.0,
+        initialized: true
+      }
+
+      {:noreply, new_state} = Controller.handle_cast(:enable_pid, state)
+
+      assert new_state.mode == :pid
+      assert_in_delta(new_state.setpoint, 93.5 + 2.7, 0.05)
+      assert_in_delta(new_state.kp, 16.0 * 1.2, 0.01)
+      assert new_state.error_sum == 0.0
+      assert new_state.last_error == 0
+      assert new_state.initialized == false
+    end
+
+    @tag :brew_phase
     test "brew switch ON boosts setpoint by expected cooling compensation" do
       state = %Controller.State{
         mode: :pid,
@@ -102,7 +135,8 @@ defmodule ExpressoFirmware.ControllerTest do
         initialized: false
       }
 
-      send_message = {:circuits_gpio, 27, 0, 0}  # @brew_switch_pin = 27, value 0 = ON
+      # @brew_switch_pin = 27, value 0 = ON
+      send_message = {:circuits_gpio, 27, 0, 0}
       {:noreply, new_state} = Controller.handle_info(send_message, state)
 
       # Expected: setpoint raised by ~2.7°C (0.1°C/sec * 27 sec)
@@ -126,8 +160,10 @@ defmodule ExpressoFirmware.ControllerTest do
         mode: :pid,
         brew_switch_state: :on,
         brew_setpoint: 93.5,
-        setpoint: 96.2,  # boosted during brew
-        kp: 16.0 * 1.2,   # boosted
+        # boosted during brew
+        setpoint: 96.2,
+        # boosted
+        kp: 16.0 * 1.2,
         base_kp: 16.0,
         ki: 2.5,
         kd: 16.0,
@@ -139,7 +175,8 @@ defmodule ExpressoFirmware.ControllerTest do
         initialized: true
       }
 
-      send_message = {:circuits_gpio, 27, 0, 1}  # @brew_switch_pin = 27, value 1 = OFF
+      # @brew_switch_pin = 27, value 1 = OFF
+      send_message = {:circuits_gpio, 27, 0, 1}
       {:noreply, new_state} = Controller.handle_info(send_message, state)
 
       # Setpoint should return to brew setpoint (no more compensation)
@@ -168,7 +205,7 @@ defmodule ExpressoFirmware.ControllerTest do
       # ki = 0.818 / (45 + 10) = 0.818 / 55 ≈ 0.0149
       # kd = 0
       assert_in_delta(kp, 45.0 / 55.0, 0.01)
-      assert_in_delta(ki, (45.0 / 55.0) / 55.0, 0.001)
+      assert_in_delta(ki, 45.0 / 55.0 / 55.0, 0.001)
       assert kd == 0
     end
 
@@ -190,10 +227,13 @@ defmodule ExpressoFirmware.ControllerTest do
         mode: :pid,
         initialized: true,
         reading: 60.0,
-        last_error: 35.0,  # error with setpoint 130
+        # error with setpoint 130
+        last_error: 35.0,
         last_output: 0,
-        error_sum: 20.0,   # already near max_integral
-        setpoint: 130.0,   # reading from get_reading() will be 95, so error = 130 - 95 = 35
+        # already near max_integral
+        error_sum: 20.0,
+        # reading from get_reading() will be 95, so error = 130 - 95 = 35
+        setpoint: 130.0,
         kp: 16.0,
         ki: 2.5,
         kd: 16.0,
@@ -211,7 +251,8 @@ defmodule ExpressoFirmware.ControllerTest do
       # When output is saturated, error_sum should NOT increase further
       # (it should remain frozen at the previous value during saturation)
       assert new_state.error_sum == state.error_sum
-      assert new_state.last_output == 100  # output clamped to max
+      # output clamped to max
+      assert new_state.last_output == 100
     end
 
     @tag :anti_windup
@@ -219,11 +260,14 @@ defmodule ExpressoFirmware.ControllerTest do
       state = %Controller.State{
         mode: :pid,
         initialized: true,
-        reading: 94.0,   # getting close to setpoint
+        # getting close to setpoint
+        reading: 94.0,
         last_error: 1.0,
         last_output: 100,
-        error_sum: 20.0,  # frozen during previous saturation
-        setpoint: 96.0,   # reading from get_reading() will be 95, so error = 96 - 95 = 1
+        # frozen during previous saturation
+        error_sum: 20.0,
+        # reading from get_reading() will be 95, so error = 96 - 95 = 1
+        setpoint: 96.0,
         kp: 16.0,
         ki: 2.5,
         kd: 16.0,
@@ -237,7 +281,8 @@ defmodule ExpressoFirmware.ControllerTest do
 
       # Error is now small (1°C), so output won't saturate
       # error_sum should resume accumulating
-      expected_error_sum = 20.0 + 1.0  # frozen value + new error
+      # frozen value + new error
+      expected_error_sum = 20.0 + 1.0
       assert new_state.error_sum == expected_error_sum
     end
   end
