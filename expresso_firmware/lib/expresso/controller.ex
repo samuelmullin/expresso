@@ -18,6 +18,15 @@ defmodule ExpressoFirmware.Controller do
   @default_steam_lambda_seconds 15.0
   @default_process_gain 1.0
 
+  # Keys that are safe to persist to / load from the config file.
+  # Runtime-only State fields (mode, initialized, brew_switch_state, error_sum, etc.) are excluded.
+  @persisted_keys [
+    :autotune_enabled, :brew_kp, :brew_ki, :brew_kd, :lambda_seconds,
+    :tau_seconds, :process_gain, :brew_setpoint, :steam_setpoint,
+    :brew_cooling_compensation_c, :brew_kp_multiplier,
+    :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds
+  ]
+
   defmodule State do
     defstruct kp: 16.0,
               ki: 2.5,
@@ -106,10 +115,12 @@ defmodule ExpressoFirmware.Controller do
     {:ok, steam_switch_ref} = GPIO.open(@steam_switch_pin, :input, pull_mode: :pullup)
     Circuits.GPIO.set_interrupts(steam_switch_ref, :both)
 
-    # File config wins over passed-in config for user-facing settings
+    # File config wins over passed-in config for user-facing settings.
+    # Only allowed persisted keys are merged to prevent hand-edited runtime fields
+    # (e.g. mode: :pid) from taking effect on boot.
     file_config =
       case Config.load() do
-        {:ok, map} -> map |> Map.to_list() |> Keyword.new()
+        {:ok, map} -> map |> Map.to_list() |> Keyword.new() |> Keyword.take(@persisted_keys)
         _ -> []
       end
 
@@ -192,16 +203,8 @@ defmodule ExpressoFirmware.Controller do
     new_state = struct(state, synced)
 
     # Persist the updated config (log failure but don't crash)
-    persisted_keys = [
-      :autotune_enabled, :brew_kp, :brew_ki, :brew_kd,
-      :lambda_seconds, :tau_seconds, :process_gain,
-      :brew_setpoint, :steam_setpoint,
-      :brew_cooling_compensation_c, :brew_kp_multiplier,
-      :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds
-    ]
-
     save_map =
-      persisted_keys
+      @persisted_keys
       |> Enum.filter(&Keyword.has_key?(synced, &1))
       |> Enum.into(%{}, fn k -> {k, Map.get(new_state, k)} end)
 
@@ -228,12 +231,16 @@ defmodule ExpressoFirmware.Controller do
     {new_steam_kp, new_steam_ki, new_steam_kd} =
       calculate_lambda_gains(state.tau_seconds, state.steam_lambda_seconds, state.process_gain)
 
-    # Apply to active gains based on which mode we're in
+    # Apply to active gains based on which mode we're in.
+    # Brew-boost (1.2× Kp) must be preserved if a brew is in progress.
     {active_kp, active_ki, active_kd} =
-      if state.steam_switch_state == :on do
-        {new_steam_kp, new_steam_ki, new_steam_kd}
-      else
-        {new_brew_kp, new_brew_ki, new_brew_kd}
+      cond do
+        state.steam_switch_state == :on ->
+          {new_steam_kp, new_steam_ki, new_steam_kd}
+        state.brew_switch_state == :on ->
+          {new_brew_kp * state.brew_kp_multiplier, new_brew_ki, new_brew_kd}
+        true ->
+          {new_brew_kp, new_brew_ki, new_brew_kd}
       end
 
     Logger.info(

@@ -1,4 +1,6 @@
 defmodule ExpressoFirmware.Config do
+  require Logger
+
   @default_path "/root/expresso_config.json"
 
   def path, do: Application.get_env(:expresso_firmware, :config_path, @default_path)
@@ -14,7 +16,8 @@ defmodule ExpressoFirmware.Config do
       {:error, :enoent} ->
         {:error, :not_found}
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.error("Config file read failed: #{inspect(reason)}")
         {:error, :not_found}
     end
   end
