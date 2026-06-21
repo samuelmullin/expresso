@@ -35,6 +35,11 @@ defmodule ExpressoFirmware.ConfigTest do
     assert {:error, :invalid} = Config.load()
   end
 
+  test "load returns :invalid for valid JSON that is not an object" do
+    File.write!(Config.path(), "[]")
+    assert {:error, :invalid} = Config.load()
+  end
+
   test "load ignores unknown keys — no arbitrary atom creation" do
     File.write!(Config.path(), ~s({"unknown_key_xyz_123": 42, "brew_kp": 0.5}))
     assert {:ok, result} = Config.load()

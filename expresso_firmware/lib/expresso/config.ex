@@ -16,13 +16,16 @@ defmodule ExpressoFirmware.Config do
     case File.read(path()) do
       {:ok, contents} ->
         case Jason.decode(contents) do
-          {:ok, map} ->
+          {:ok, map} when is_map(map) ->
             result =
               map
               |> Map.take(@safe_keys)
               |> Map.new(fn {k, v} -> {String.to_atom(k), v} end)
 
             {:ok, result}
+
+          {:ok, _} ->
+            {:error, :invalid}
 
           {:error, _} ->
             {:error, :invalid}

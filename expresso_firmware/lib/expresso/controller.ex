@@ -194,9 +194,13 @@ defmodule ExpressoFirmware.Controller do
     # Normalize map input to keyword list so downstream Keyword functions work correctly
     new_config = if is_map(new_config), do: Map.to_list(new_config), else: new_config
 
-    # When autotune is enabled, reject attempts to set gain fields it owns
+    # Determine effective autotune state for this call — the incoming config may be
+    # enabling or disabling autotune, so we must use that value, not the old state.
+    effective_autotune = Keyword.get(new_config, :autotune_enabled, state.autotune_enabled)
+
+    # When autotune is enabled (now or after this call), reject attempts to set gain fields it owns
     new_config =
-      if state.autotune_enabled do
+      if effective_autotune do
         {blocked, allowed} = Enum.split_with(new_config, fn {k, _} -> k in @autotune_managed_keys end)
 
         if blocked != [] do

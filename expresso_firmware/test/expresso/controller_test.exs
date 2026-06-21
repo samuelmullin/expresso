@@ -411,5 +411,26 @@ defmodule ExpressoFirmware.ControllerTest do
       # Non-gain field still applied
       assert new_state.brew_setpoint == 94.0
     end
+
+    test "set_config enabling autotune in the same call blocks gains from that same call" do
+      state = %Controller.State{autotune_enabled: false, kp: 0.82, brew_kp: 0.82}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [autotune_enabled: true, kp: 5.0]}, nil, state)
+      # autotune enabled
+      assert new_state.autotune_enabled == true
+      # kp not overridden — effective autotune was true for this call
+      assert new_state.kp == 0.82
+    end
+
+    test "set_config disabling autotune and setting gains in one call applies both" do
+      state = %Controller.State{autotune_enabled: true, kp: 0.82, brew_kp: 0.82, brew_ki: 0.015, brew_kd: 0.0}
+      {:reply, new_state, new_state} =
+        Controller.handle_call({:set_config, [autotune_enabled: false, kp: 1.5]}, nil, state)
+      # autotune disabled
+      assert new_state.autotune_enabled == false
+      # gain applied because effective autotune is now false
+      assert new_state.kp == 1.5
+      assert new_state.brew_kp == 1.5
+    end
   end
 end
