@@ -3,14 +3,29 @@ defmodule ExpressoFirmware.Config do
 
   @default_path "/root/expresso_config.json"
 
+  # Only these string keys are ever converted to atoms, preventing arbitrary atom creation
+  # from hand-edited or malformed config files.
+  @safe_keys ~w(autotune_enabled brew_kp brew_ki brew_kd lambda_seconds
+                tau_seconds process_gain brew_setpoint steam_setpoint
+                brew_cooling_compensation_c brew_kp_multiplier
+                steam_kp steam_ki steam_kd steam_lambda_seconds)
+
   def path, do: Application.get_env(:expresso_firmware, :config_path, @default_path)
 
   def load do
     case File.read(path()) do
       {:ok, contents} ->
-        case Jason.decode(contents, keys: :atoms) do
-          {:ok, map} -> {:ok, map}
-          {:error, _} -> {:error, :invalid}
+        case Jason.decode(contents) do
+          {:ok, map} ->
+            result =
+              map
+              |> Map.take(@safe_keys)
+              |> Map.new(fn {k, v} -> {String.to_atom(k), v} end)
+
+            {:ok, result}
+
+          {:error, _} ->
+            {:error, :invalid}
         end
 
       {:error, :enoent} ->

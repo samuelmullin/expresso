@@ -35,6 +35,15 @@ defmodule ExpressoFirmware.ConfigTest do
     assert {:error, :invalid} = Config.load()
   end
 
+  test "load ignores unknown keys — no arbitrary atom creation" do
+    File.write!(Config.path(), ~s({"unknown_key_xyz_123": 42, "brew_kp": 0.5}))
+    assert {:ok, result} = Config.load()
+    # Known key preserved
+    assert_in_delta result[:brew_kp], 0.5, 0.0001
+    # Unknown key silently dropped — atom was never created
+    refute Map.has_key?(result, :unknown_key_xyz_123)
+  end
+
   test "save round-trips all persisted keys" do
     values = %{
       autotune_enabled: true,

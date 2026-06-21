@@ -191,6 +191,9 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_call({:set_config, new_config}, _, %State{} = state) do
+    # Normalize map input to keyword list so downstream Keyword functions work correctly
+    new_config = if is_map(new_config), do: Map.to_list(new_config), else: new_config
+
     # When autotune is enabled, reject attempts to set gain fields it owns
     new_config =
       if state.autotune_enabled do
@@ -198,7 +201,7 @@ defmodule ExpressoFirmware.Controller do
 
         if blocked != [] do
           Logger.warning(
-            "set_config: ignoring #{inspect(Keyword.keys(blocked))} — managed by autotune. " <>
+            "set_config: ignoring #{inspect(Enum.map(blocked, &elem(&1, 0)))} — managed by autotune. " <>
               "Disable autotune or call autotune_lambda/1 to update gains."
           )
         end
