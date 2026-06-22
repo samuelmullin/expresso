@@ -118,10 +118,14 @@ defmodule ExpressoUiWeb.ControllerLive do
   end
 
   def mount(_params, _session, socket) do
-    if connected?(socket), do: :timer.send_interval(1000, self(), :tick)
-    state = controller().get_state()
-    history = controller().get_history()
-    {:ok, assign(socket, build_assigns(state, history, true, nil, 0))}
+    if connected?(socket) do
+      :timer.send_interval(1000, self(), :tick)
+      state = controller().get_state()
+      history = controller().get_history()
+      {:ok, assign(socket, build_assigns(state, history, true, nil, 0))}
+    else
+      {:ok, assign(socket, build_assigns(controller().get_state(), [], true, nil, 0))}
+    end
   end
 
   def handle_info(:tick, socket) do
@@ -131,7 +135,8 @@ defmodule ExpressoUiWeb.ControllerLive do
     {save_result, save_ticks} =
       case socket.assigns.save_result do
         nil -> {nil, 0}
-        r ->
+        {:error, _} = r -> {r, 0}
+        {:ok, _} = r ->
           ticks = socket.assigns.save_ticks + 1
           if ticks > 4, do: {nil, 0}, else: {r, ticks}
       end
@@ -167,7 +172,7 @@ defmodule ExpressoUiWeb.ControllerLive do
   end
 
   def handle_event("validate", _params, socket) do
-    {:noreply, socket}
+    {:noreply, assign(socket, save_result: nil, save_ticks: 0)}
   end
 
   def handle_event("save", %{"cfg" => cfg}, socket) do
