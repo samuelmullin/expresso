@@ -141,7 +141,10 @@ defmodule ExpressoFirmware.Controller do
     tau = Keyword.get(merged, :tau_seconds, @default_tau_seconds)
     lambda = Keyword.get(merged, :lambda_seconds, @default_lambda_seconds)
     steam_lambda = Keyword.get(merged, :steam_lambda_seconds, @default_steam_lambda_seconds)
-    process_gain = Keyword.get(merged, :process_gain, @default_process_gain)
+    raw_gain = Keyword.get(merged, :process_gain, @default_process_gain)
+    # process_gain: 0 causes 1/0 ArithmeticError in calculate_lambda_gains, crashing init
+    # after GPIO refs are opened but before {:ok, state} is returned — leaking both pins.
+    process_gain = if raw_gain > 0, do: raw_gain, else: (Logger.error("Config process_gain=#{raw_gain} is invalid, using default #{@default_process_gain}"); @default_process_gain)
 
     merged =
       if autotune_enabled do
@@ -188,8 +191,9 @@ defmodule ExpressoFirmware.Controller do
         {:ok, samples} ->
           trimmed = Enum.take(samples, -@history_max)
 
-          {Enum.reduce(trimmed, :queue.new(), fn sample, q -> :queue.in(sample, q) end),
-           length(trimmed)}
+          Enum.reduce(trimmed, {:queue.new(), 0}, fn s, {q, n} ->
+            {:queue.in(s, q), n + 1}
+          end)
 
         _ ->
           {:queue.new(), 0}

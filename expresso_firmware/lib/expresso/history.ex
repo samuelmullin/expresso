@@ -3,7 +3,6 @@ defmodule ExpressoFirmware.History do
 
   @default_path "/root/expresso_history.json"
   @mode_atoms %{"pid" => :pid, "disabled" => :disabled, "pwm" => :pwm}
-  @safe_sample_keys ~w(t temp sp out mode)
 
   def path, do: Application.get_env(:expresso_firmware, :history_path, @default_path)
 
@@ -36,8 +35,7 @@ defmodule ExpressoFirmware.History do
   end
 
   defp parse_sample(map) when is_map(map) do
-    with true <- Enum.all?(@safe_sample_keys, &Map.has_key?(map, &1)),
-         {:ok, t} <- integer_value(map["t"]),
+    with {:ok, t} <- integer_value(map["t"]),
          {:ok, temp} <- float_value(map["temp"]),
          {:ok, sp} <- float_value(map["sp"]),
          {:ok, out} <- integer_value(map["out"]),
@@ -58,12 +56,6 @@ defmodule ExpressoFirmware.History do
   defp float_value(value) when is_float(value), do: {:ok, value}
   defp float_value(_), do: :error
 
-  defp mode_atom(mode) when is_binary(mode) do
-    case Map.fetch(@mode_atoms, mode) do
-      {:ok, atom} -> {:ok, atom}
-      :error -> :error
-    end
-  end
-
+  defp mode_atom(mode) when is_binary(mode), do: Map.fetch(@mode_atoms, mode)
   defp mode_atom(_), do: :error
 end
