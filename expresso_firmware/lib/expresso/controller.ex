@@ -19,6 +19,14 @@ defmodule ExpressoFirmware.Controller do
   @default_process_gain 1.0
   @history_max 600
 
+  # Sensor safety bounds (DS18B20 range is -55°C to +125°C; boiler can't physically exceed these)
+  @sensor_min_c 0.0
+  @sensor_max_c 200.0
+  @sensor_failure_threshold 3
+
+  # Max continuous brew time before forced heater cut
+  @max_brew_ms 60_000
+
   # Keys that are safe to persist to / load from the config file.
   # Runtime-only State fields (mode, initialized, brew_switch_state, error_sum, etc.) are excluded.
   @persisted_keys [
@@ -74,7 +82,9 @@ defmodule ExpressoFirmware.Controller do
               error_sum: 0.0,
               initialized: false,
               history: :queue.new(),
-              history_count: 0
+              history_count: 0,
+              sensor_failure_count: 0,
+              brew_start_ms: nil
   end
 
   # --- Public API ---
@@ -352,7 +362,8 @@ defmodule ExpressoFirmware.Controller do
         ki: state.brew_ki,
         kd: state.brew_kd,
         error_sum: 0.0,
-        last_error: 0
+        last_error: 0,
+        brew_start_ms: nil
       )
 
     {:noreply, normal_state}
@@ -365,8 +376,7 @@ defmodule ExpressoFirmware.Controller do
         "Boost setpoint by #{state.brew_cooling_compensation_c}°C and Kp by #{state.brew_kp_multiplier}×"
     )
 
-    # Enter PID mode (not PWM) with boosted setpoint and Kp to compensate for measured cooling
-    {:noreply, brew_pid_state(state)}
+    {:noreply, brew_pid_state(struct(state, brew_start_ms: System.monotonic_time(:millisecond)))}
   end
 
   @impl true
@@ -407,63 +417,60 @@ defmodule ExpressoFirmware.Controller do
 
   @impl true
   def handle_info(:control_loop, %State{mode: :pid, initialized: false} = state) do
-    # First control cycle: read sensor and initialize last_error without calculating PID
     reading = get_reading()
 
-    Logger.debug("PID controller initializing: setpoint=#{state.setpoint}, reading=#{reading}")
-
-    state =
-      struct(state,
-        reading: reading,
-        last_error: state.setpoint - reading,
-        initialized: true
-      )
-
-    Process.send_after(self(), :control_loop, state.cycle_ms)
-    {:noreply, state}
+    if valid_reading?(reading) do
+      Logger.debug("PID controller initializing: setpoint=#{state.setpoint}, reading=#{reading}")
+      state = struct(state, reading: reading, last_error: state.setpoint - reading, initialized: true, sensor_failure_count: 0)
+      Process.send_after(self(), :control_loop, state.cycle_ms)
+      {:noreply, state, 2 * state.cycle_ms}
+    else
+      state = handle_sensor_failure(state)
+      Process.send_after(self(), :control_loop, state.cycle_ms)
+      {:noreply, state, 2 * state.cycle_ms}
+    end
   end
 
   @impl true
   def handle_info(:control_loop, %State{mode: :pid, initialized: true} = state) do
-    # Compute PID Vars
-    reading = get_reading()
-    error = state.setpoint - reading
-    error_change = error - state.last_error
+    state = maybe_timeout_brew(state)
 
-    # Calculate output first (before clamping) to detect saturation
-    unclamped_output = state.kp * error + state.ki * state.error_sum + state.kd * error_change
+    if state.mode == :disabled do
+      Process.send_after(self(), :control_loop, state.cycle_ms)
+      {:noreply, state, 2 * state.cycle_ms}
+    else
+      reading = get_reading()
 
-    # Anti-windup: only accumulate integral if output is NOT saturated
-    error_sum =
-      if unclamped_output >= state.max_output or unclamped_output <= state.min_output do
-        # Hold integral constant when saturated
-        state.error_sum
+      if valid_reading?(reading) do
+        state = struct(state, sensor_failure_count: 0)
+        error = state.setpoint - reading
+        error_change = error - state.last_error
+
+        unclamped_output = state.kp * error + state.ki * state.error_sum + state.kd * error_change
+
+        error_sum =
+          if unclamped_output >= state.max_output or unclamped_output <= state.min_output do
+            state.error_sum
+          else
+            clamp_integral(state.error_sum + error, state.max_integral)
+          end
+
+        output =
+          unclamped_output
+          |> floor()
+          |> clamp_output(state.min_output, state.max_output)
+
+        state = struct(state, error_sum: error_sum, last_output: output, last_error: error, reading: reading)
+        heater().set_output(output, state.max_output)
+        state = record_sample(state, reading, output)
+        Process.send_after(self(), :control_loop, state.cycle_ms)
+        {:noreply, state, 2 * state.cycle_ms}
       else
-        clamp_integral(state.error_sum + error, state.max_integral)
+        state = handle_sensor_failure(state)
+        Process.send_after(self(), :control_loop, state.cycle_ms)
+        {:noreply, state, 2 * state.cycle_ms}
       end
-
-    # Now clamp the output
-    output =
-      unclamped_output
-      |> floor()
-      |> clamp_output(state.min_output, state.max_output)
-
-    # Update the state with the new calculated variables and enable the heater if necessary
-    state =
-      struct(state,
-        error_sum: error_sum,
-        last_output: output,
-        last_error: error,
-        reading: reading
-      )
-
-    heater().set_output(output, state.max_output)
-
-    state = record_sample(state, reading, output)
-
-    Process.send_after(self(), :control_loop, state.cycle_ms)
-
-    {:noreply, state}
+    end
   end
 
   @impl true
@@ -481,7 +488,13 @@ defmodule ExpressoFirmware.Controller do
   def handle_info(:control_loop, %State{mode: :disabled} = state) do
     Logger.debug("Heater control is disabled")
     Process.send_after(self(), :control_loop, state.cycle_ms)
-    {:noreply, struct(state, last_output: 0, last_error: 0, error_sum: 0)}
+    {:noreply, struct(state, last_output: 0, last_error: 0, error_sum: 0), 2 * state.cycle_ms}
+  end
+
+  @impl true
+  def handle_info(:timeout, state) do
+    Logger.error("Watchdog: control loop stalled — forcing restart")
+    {:stop, :watchdog_timeout, state}
   end
 
   @impl true
@@ -502,6 +515,35 @@ defmodule ExpressoFirmware.Controller do
   end
 
   # --- Private API ---
+
+  defp valid_reading?(r), do: is_number(r) and r >= @sensor_min_c and r <= @sensor_max_c
+
+  defp handle_sensor_failure(state) do
+    count = state.sensor_failure_count + 1
+    Logger.warning("Sensor reading out of range (#{count}/#{@sensor_failure_threshold})")
+
+    if count >= @sensor_failure_threshold do
+      Logger.error("Sensor failure — disabling heater")
+      heater().set_output(0, state.max_output)
+      struct(state, sensor_failure_count: count, mode: :disabled)
+    else
+      struct(state, sensor_failure_count: count)
+    end
+  end
+
+  defp maybe_timeout_brew(%State{brew_switch_state: :on, brew_start_ms: t0} = state) when not is_nil(t0) do
+    elapsed = System.monotonic_time(:millisecond) - t0
+
+    if elapsed >= @max_brew_ms do
+      Logger.warning("Brew timeout (#{div(elapsed, 1000)}s) — disabling heater")
+      heater().set_output(0, state.max_output)
+      struct(state, mode: :disabled, brew_start_ms: nil)
+    else
+      state
+    end
+  end
+
+  defp maybe_timeout_brew(state), do: state
 
   # Our output is the % of the Duty Cycle that the Heater should run.  A value of 25.0 will run
   # the heater for 25% of the configured duty cycle.  The max and min output values are configurable.
