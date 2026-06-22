@@ -25,7 +25,7 @@ defmodule ExpressoFirmware.Controller do
     :autotune_enabled, :brew_kp, :brew_ki, :brew_kd, :lambda_seconds,
     :tau_seconds, :process_gain, :brew_setpoint, :steam_setpoint,
     :brew_cooling_compensation_c, :brew_kp_multiplier,
-    :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds
+    :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds, :cycle_ms
   ]
 
   # Gain fields owned by the autotune system. When autotune is enabled, set_config
