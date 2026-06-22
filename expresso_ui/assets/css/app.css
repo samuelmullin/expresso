@@ -1,6 +1,197 @@
 /* This file is for your main application CSS */
 @import "./phoenix.css";
 
+/* Dashboard layout */
+.dashboard {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Status bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.status-item--large .status-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #fff;
+}
+
+.status-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #cdd6f4;
+}
+
+.status-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+}
+
+.mode-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  background: #444;
+  color: #ccc;
+}
+.mode-badge--brew { background: #1e6b3e; color: #a0f0c0; }
+.mode-badge--steam { background: #7a1e1e; color: #f0b0b0; }
+.mode-badge--pid { background: #1e3a7a; color: #a0c0f0; }
+.mode-badge--pwm { background: #5a3e1e; color: #f0d0a0; }
+.mode-badge--disabled { background: #333; color: #888; }
+
+.switch-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #444;
+  display: inline-block;
+}
+.switch-dot--on { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+
+/* Chart */
+.chart-box {
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+/* Settings */
+.box {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.settings-box {
+  background: #fafafa;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+  margin: 0 0 0.25rem;
+}
+
+.settings-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+  color: #444;
+}
+
+.settings-input {
+  width: 100%;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.settings-input:disabled {
+  background: #f0f0f0;
+  color: #888;
+}
+
+.settings-checkbox-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.4rem !important;
+  font-size: 0.9rem !important;
+}
+
+.settings-checkbox {
+  width: auto;
+  cursor: pointer;
+}
+
+.gains-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.gain-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.1rem 0;
+  border-bottom: 1px solid #eee;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.btn {
+  padding: 0.4rem 1rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-primary {
+  background: #1e6b3e;
+  color: #fff;
+  border-color: #1e6b3e;
+}
+
+.save-feedback {
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.save-feedback--ok { background: #d4edda; color: #155724; }
+.save-feedback--error { background: #f8d7da; color: #721c24; }
+
 /* Alerts and form errors used by phx.new */
 .alert {
   padding: 15px;
