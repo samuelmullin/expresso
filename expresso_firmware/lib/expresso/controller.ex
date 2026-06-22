@@ -541,8 +541,8 @@ defmodule ExpressoFirmware.Controller do
 
     sample = %{
       t: System.os_time(:millisecond),
-      temp: reading * 1.0,
-      sp: state.setpoint * 1.0,
+      temp: reading,
+      sp: state.setpoint,
       out: output,
       mode: state.mode
     }
@@ -562,13 +562,14 @@ defmodule ExpressoFirmware.Controller do
         history_flush_counter: rem(flush_counter, @history_flush_every)
       )
 
-    if flush_counter >= @history_flush_every do
+    if flush_counter == @history_flush_every do
       flush_history(new_state)
     else
       new_state
     end
   end
 
+  # Flushes history to disk and returns state so callers can chain it.
   defp flush_history(state) do
     case History.save(:queue.to_list(state.history)) do
       :ok -> :ok
