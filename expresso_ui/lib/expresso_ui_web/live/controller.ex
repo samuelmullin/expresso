@@ -84,6 +84,34 @@ defmodule ExpressoUiWeb.ControllerLive do
               <% end %>
             </div>
 
+            <%= if @autotune_enabled do %>
+              <div class="settings-section">
+                <h3 class="settings-section-title">Lambda Tuning</h3>
+                <label>Brew λ (s)
+                  <%= number_input f, :lambda_seconds, value: @lambda_seconds, step: "0.5", class: "settings-input", disabled: @settings_locked %>
+                </label>
+                <label>Steam λ (s)
+                  <%= number_input f, :steam_lambda_seconds, value: @steam_lambda_seconds, step: "0.5", class: "settings-input", disabled: @settings_locked %>
+                </label>
+                <label>τ (s)
+                  <%= number_input f, :tau_seconds, value: @tau_seconds, step: "1", class: "settings-input", disabled: @settings_locked %>
+                </label>
+                <label>Process Gain
+                  <%= number_input f, :process_gain, value: @process_gain, step: "0.01", class: "settings-input", disabled: @settings_locked %>
+                </label>
+              </div>
+            <% end %>
+
+            <div class="settings-section">
+              <h3 class="settings-section-title">Brew Phase</h3>
+              <label>Cooling Comp (°C)
+                <%= number_input f, :brew_cooling_compensation_c, value: @brew_cooling_compensation_c, step: "0.1", class: "settings-input", disabled: @settings_locked %>
+              </label>
+              <label>KP Multiplier
+                <%= number_input f, :brew_kp_multiplier, value: @brew_kp_multiplier, step: "0.01", class: "settings-input", disabled: @settings_locked %>
+              </label>
+            </div>
+
             <div class="settings-section">
               <h3 class="settings-section-title">PID</h3>
               <label>Cycle (ms)
@@ -105,6 +133,9 @@ defmodule ExpressoUiWeb.ControllerLive do
           <div class="settings-actions">
             <%= if @settings_locked do %>
               <button type="button" phx-click="edit" class="btn">Edit</button>
+              <%= if @autotune_enabled do %>
+                <button type="button" phx-click="recalculate" class="btn btn-secondary">Recalculate Gains</button>
+              <% end %>
             <% else %>
               <button type="submit" class="btn btn-primary">Save</button>
               <button type="button" phx-click="cancel" class="btn">Cancel</button>
@@ -156,6 +187,10 @@ defmodule ExpressoUiWeb.ControllerLive do
        steam_ki: state.steam_ki,
        steam_kd: state.steam_kd,
        autotune_enabled: state.autotune_enabled,
+       lambda_seconds: state.lambda_seconds,
+       steam_lambda_seconds: state.steam_lambda_seconds,
+       tau_seconds: state.tau_seconds,
+       process_gain: state.process_gain,
        history: history,
        save_result: save_result,
        save_ticks: save_ticks
@@ -175,6 +210,17 @@ defmodule ExpressoUiWeb.ControllerLive do
     {:noreply, assign(socket, save_result: nil, save_ticks: 0)}
   end
 
+  def handle_event("recalculate", _, socket) do
+    case controller().autotune_lambda(socket.assigns.lambda_seconds) do
+      {:ok, _gains} ->
+        state = controller().get_state()
+        {:noreply, assign(socket, build_assigns(state, socket.assigns.history, true, {:ok, "Gains recalculated."}, 0))}
+
+      {:error, :autotune_disabled} ->
+        {:noreply, assign(socket, save_result: {:error, "Autotune is disabled."}, save_ticks: 0)}
+    end
+  end
+
   def handle_event("save", %{"cfg" => cfg}, socket) do
     autotune_enabled = cfg["autotune_enabled"] in ["true", "on"]
 
@@ -184,7 +230,9 @@ defmodule ExpressoUiWeb.ControllerLive do
            {cycle_ms, _} <- Integer.parse(cfg["cycle_ms"] || ""),
            {max_integral, _} <- Float.parse(cfg["max_integral"] || ""),
            {min_output, _} <- Float.parse(cfg["min_output"] || ""),
-           {max_output, _} <- Float.parse(cfg["max_output"] || "") do
+           {max_output, _} <- Float.parse(cfg["max_output"] || ""),
+           {brew_cooling_compensation_c, _} <- Float.parse(cfg["brew_cooling_compensation_c"] || ""),
+           {brew_kp_multiplier, _} <- Float.parse(cfg["brew_kp_multiplier"] || "") do
         {:ok,
          [
            brew_setpoint: brew_setpoint,
@@ -193,10 +241,32 @@ defmodule ExpressoUiWeb.ControllerLive do
            max_integral: max_integral,
            min_output: min_output,
            max_output: max_output,
-           autotune_enabled: autotune_enabled
+           autotune_enabled: autotune_enabled,
+           brew_cooling_compensation_c: brew_cooling_compensation_c,
+           brew_kp_multiplier: brew_kp_multiplier
          ]}
       else
         _ -> :error
+      end
+
+    lambda_parse =
+      if autotune_enabled do
+        with {lambda_seconds, _} <- Float.parse(cfg["lambda_seconds"] || ""),
+             {steam_lambda_seconds, _} <- Float.parse(cfg["steam_lambda_seconds"] || ""),
+             {tau_seconds, _} <- Float.parse(cfg["tau_seconds"] || ""),
+             {process_gain, _} <- Float.parse(cfg["process_gain"] || "") do
+          {:ok,
+           [
+             lambda_seconds: lambda_seconds,
+             steam_lambda_seconds: steam_lambda_seconds,
+             tau_seconds: tau_seconds,
+             process_gain: process_gain
+           ]}
+        else
+          _ -> :error
+        end
+      else
+        {:ok, []}
       end
 
     gain_parse =
@@ -223,9 +293,9 @@ defmodule ExpressoUiWeb.ControllerLive do
         {:ok, []}
       end
 
-    case {base_parse, gain_parse} do
-      {{:ok, base}, {:ok, gains}} ->
-        new_state = controller().set_config(base ++ gains)
+    case {base_parse, lambda_parse, gain_parse} do
+      {{:ok, base}, {:ok, lambda}, {:ok, gains}} ->
+        new_state = controller().set_config(base ++ lambda ++ gains)
         {:noreply, assign(socket, build_assigns(new_state, socket.assigns.history, true, {:ok, "Saved."}, 0))}
 
       _ ->
@@ -250,6 +320,12 @@ defmodule ExpressoUiWeb.ControllerLive do
       steam_kp: state.steam_kp,
       steam_ki: state.steam_ki,
       steam_kd: state.steam_kd,
+      lambda_seconds: state.lambda_seconds,
+      steam_lambda_seconds: state.steam_lambda_seconds,
+      tau_seconds: state.tau_seconds,
+      process_gain: state.process_gain,
+      brew_cooling_compensation_c: state.brew_cooling_compensation_c,
+      brew_kp_multiplier: state.brew_kp_multiplier,
       cycle_ms: state.cycle_ms,
       max_integral: state.max_integral,
       min_output: state.min_output,
