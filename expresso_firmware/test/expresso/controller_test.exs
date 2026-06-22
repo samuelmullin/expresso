@@ -87,7 +87,7 @@ defmodule ExpressoFirmware.ControllerTest do
       }
 
       # Send first control loop — should initialize without applying PID
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       # After first cycle:
       # - initialized should be true
@@ -261,7 +261,7 @@ defmodule ExpressoFirmware.ControllerTest do
       # With Ki=2.5 and error_sum=20.0, ki contribution = 50, which when added to kp term
       # will exceed max_output=100, causing saturation
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       # When output is saturated, error_sum should NOT increase further
       # (it should remain frozen at the previous value during saturation)
@@ -292,7 +292,7 @@ defmodule ExpressoFirmware.ControllerTest do
         max_output: 100
       }
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       # Error is now small (1°C), so output won't saturate
       # error_sum should resume accumulating
@@ -320,7 +320,7 @@ defmodule ExpressoFirmware.ControllerTest do
         history_count: 0,
       }
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       assert new_state.history_count == 1
       assert [sample] = :queue.to_list(new_state.history)
@@ -338,7 +338,7 @@ defmodule ExpressoFirmware.ControllerTest do
         history_count: 0,
       }
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       assert new_state.history_count == 0
       assert :queue.to_list(new_state.history) == []
@@ -353,7 +353,7 @@ defmodule ExpressoFirmware.ControllerTest do
         history_count: 0,
       }
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       assert new_state.history_count == 0
       assert :queue.to_list(new_state.history) == []
@@ -383,7 +383,7 @@ defmodule ExpressoFirmware.ControllerTest do
         history_count: history_max,
       }
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       assert new_state.history_count == history_max
       samples = :queue.to_list(new_state.history)
@@ -535,6 +535,124 @@ defmodule ExpressoFirmware.ControllerTest do
       # gain applied because effective autotune is now false
       assert new_state.kp == 1.5
       assert new_state.brew_kp == 1.5
+    end
+  end
+
+  describe "sensor failure detection" do
+    defmodule BadReadingHeater do
+      def set_output(output, max_output), do: send(ExpressoFirmware.ControllerTest, {:set_output, output, max_output})
+      def get_reading(), do: 999.0
+    end
+
+    test "out-of-range reading increments sensor_failure_count" do
+      Application.put_env(:expresso_firmware, :heater_module, BadReadingHeater)
+
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        setpoint: 93.5,
+        reading: 93.5,
+        kp: 1.0, ki: 0.01, kd: 0.0,
+        error_sum: 0.0, last_error: 0,
+        cycle_ms: 1000, max_integral: 20.0, min_output: 0, max_output: 100,
+        sensor_failure_count: 0
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.sensor_failure_count == 1
+      assert new_state.mode == :pid
+    end
+
+    test "three consecutive bad readings disables heater" do
+      Application.put_env(:expresso_firmware, :heater_module, BadReadingHeater)
+
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        setpoint: 93.5,
+        reading: 93.5,
+        kp: 1.0, ki: 0.01, kd: 0.0,
+        error_sum: 0.0, last_error: 0,
+        cycle_ms: 1000, max_integral: 20.0, min_output: 0, max_output: 100,
+        sensor_failure_count: 2
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.mode == :disabled
+      assert new_state.sensor_failure_count == 3
+      assert_receive {:set_output, 0, 100}
+    end
+
+    test "valid reading resets sensor_failure_count" do
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        setpoint: 93.5,
+        reading: 93.5,
+        kp: 1.0, ki: 0.01, kd: 0.0,
+        error_sum: 0.0, last_error: 0,
+        cycle_ms: 1000, max_integral: 20.0, min_output: 0, max_output: 100,
+        sensor_failure_count: 2
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.sensor_failure_count == 0
+      assert new_state.mode == :pid
+    end
+  end
+
+  describe "brew timer" do
+    test "brew switch ON records brew_start_ms" do
+      state = %Controller.State{
+        mode: :pid,
+        brew_switch_state: :off,
+        brew_setpoint: 93.5,
+        setpoint: 93.5,
+        kp: 16.0, brew_kp: 16.0, brew_ki: 2.5, brew_kd: 16.0,
+        ki: 2.5, kd: 16.0,
+        error_sum: 0.0, last_error: 0,
+        brew_cooling_compensation_c: 2.7, brew_kp_multiplier: 1.2,
+        brew_start_ms: nil
+      }
+
+      {:noreply, new_state} = Controller.handle_info({:circuits_gpio, 27, 0, 0}, state)
+      assert not is_nil(new_state.brew_start_ms)
+    end
+
+    test "brew switch OFF clears brew_start_ms" do
+      state = %Controller.State{
+        mode: :pid,
+        brew_switch_state: :on,
+        brew_setpoint: 93.5, setpoint: 96.2,
+        kp: 16.0, brew_kp: 16.0, brew_ki: 2.5, brew_kd: 16.0,
+        ki: 2.5, kd: 16.0,
+        error_sum: 0.0, last_error: 0,
+        brew_start_ms: System.monotonic_time(:millisecond) - 5000
+      }
+
+      {:noreply, new_state} = Controller.handle_info({:circuits_gpio, 27, 0, 1}, state)
+      assert is_nil(new_state.brew_start_ms)
+    end
+
+    test "brew timeout disables heater after max brew time" do
+      expired_start = System.monotonic_time(:millisecond) - 61_000
+
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        brew_switch_state: :on,
+        brew_start_ms: expired_start,
+        setpoint: 96.2, reading: 96.0,
+        kp: 1.0, ki: 0.01, kd: 0.0,
+        error_sum: 0.0, last_error: 0,
+        cycle_ms: 1000, max_integral: 20.0, min_output: 0, max_output: 100,
+        sensor_failure_count: 0
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.mode == :disabled
+      assert is_nil(new_state.brew_start_ms)
+      assert_receive {:set_output, 0, 100}
     end
   end
 end

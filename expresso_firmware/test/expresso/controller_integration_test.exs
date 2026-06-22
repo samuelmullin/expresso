@@ -140,11 +140,11 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       assert brew_state.initialized == false
 
       # First PID cycle after brew ON (initializes last_error)
-      {:noreply, init_state} = Controller.handle_info(:control_loop, brew_state)
+      {:noreply, init_state, _} = Controller.handle_info(:control_loop, brew_state)
       assert init_state.initialized == true
 
       # Second PID cycle (actual PID calculation)
-      {:noreply, running_state} = Controller.handle_info(:control_loop, init_state)
+      {:noreply, running_state, _} = Controller.handle_info(:control_loop, init_state)
       assert running_state.last_output >= 0
       assert running_state.last_output <= 100
 
@@ -174,7 +174,7 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
         max_output: 100
       )
 
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
 
       # Output should be clamped to max
       assert new_state.last_output == 100
@@ -297,9 +297,9 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
     test "multi-cycle PID run accumulates samples in history" do
       state = base_state(mode: :pid, initialized: true)
 
-      {:noreply, s1} = Controller.handle_info(:control_loop, state)
-      {:noreply, s2} = Controller.handle_info(:control_loop, s1)
-      {:noreply, s3} = Controller.handle_info(:control_loop, s2)
+      {:noreply, s1, _} = Controller.handle_info(:control_loop, state)
+      {:noreply, s2, _} = Controller.handle_info(:control_loop, s1)
+      {:noreply, s3, _} = Controller.handle_info(:control_loop, s2)
 
       assert s3.history_count == 3
       {:reply, samples, _} = Controller.handle_call(:get_history, nil, s3)

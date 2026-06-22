@@ -33,6 +33,10 @@ defmodule ExpressoUiWeb.ControllerLive do
           <span class={"switch-dot #{if @steam_switch == :on, do: "switch-dot--on"}"}></span>
           <span class="status-label">steam switch</span>
         </div>
+        <div class="status-item">
+          <span class="status-value"><%= @cycle_ms %>ms</span>
+          <span class="status-label">cycle</span>
+        </div>
       </div>
 
       <!-- Chart -->
@@ -180,6 +184,7 @@ defmodule ExpressoUiWeb.ControllerLive do
        steam_lambda_seconds: state.steam_lambda_seconds,
        tau_seconds: state.tau_seconds,
        process_gain: state.process_gain,
+       cycle_ms: state.cycle_ms,
        history: history,
        save_result: save_result,
        save_ticks: save_ticks

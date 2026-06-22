@@ -3,6 +3,6 @@ defmodule ExpressoUiWeb.PageControllerTest do
 
   test "GET /", %{conn: conn} do
     conn = get(conn, "/")
-    assert html_response(conn, 200) =~ "KP:"
+    assert html_response(conn, 200) =~ "dashboard"
   end
 end
