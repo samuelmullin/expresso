@@ -71,8 +71,11 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       last_error: 0,
       last_output: 0,
       error_sum: 0.0,
-      initialized: false
+      initialized: false,
+      history: :queue.new(),
+      history_count: 0
     }
+
     struct(defaults, overrides)
   end
 
@@ -279,6 +282,31 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
 
       assert new_state.kp == 0.82
       assert new_state.brew_kp == 0.82
+    end
+  end
+
+  describe "history recording" do
+    test "get_history returns empty list when no samples recorded" do
+      state = base_state(mode: :disabled)
+
+      {:reply, samples, _} = Controller.handle_call(:get_history, nil, state)
+
+      assert samples == []
+    end
+
+    test "multi-cycle PID run accumulates samples in history" do
+      state = base_state(mode: :pid, initialized: true)
+
+      {:noreply, s1} = Controller.handle_info(:control_loop, state)
+      {:noreply, s2} = Controller.handle_info(:control_loop, s1)
+      {:noreply, s3} = Controller.handle_info(:control_loop, s2)
+
+      assert s3.history_count == 3
+      {:reply, samples, _} = Controller.handle_call(:get_history, nil, s3)
+      assert length(samples) == 3
+      [a, b, c] = samples
+      assert a.t <= b.t
+      assert b.t <= c.t
     end
   end
 end

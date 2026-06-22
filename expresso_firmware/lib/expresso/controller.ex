@@ -17,6 +17,7 @@ defmodule ExpressoFirmware.Controller do
   @default_lambda_seconds 10.0
   @default_steam_lambda_seconds 15.0
   @default_process_gain 1.0
+  @history_max 600
 
   # Keys that are safe to persist to / load from the config file.
   # Runtime-only State fields (mode, initialized, brew_switch_state, error_sum, etc.) are excluded.
@@ -71,7 +72,9 @@ defmodule ExpressoFirmware.Controller do
               last_error: 0,
               last_output: 0,
               error_sum: 0.0,
-              initialized: false
+              initialized: false,
+              history: :queue.new(),
+              history_count: 0
   end
 
   # --- Public API ---
@@ -92,6 +95,7 @@ defmodule ExpressoFirmware.Controller do
 
   def set_config(new_config), do: GenServer.call(__MODULE__, {:set_config, new_config})
   def get_state(), do: GenServer.call(__MODULE__, :get_state)
+  def get_history(), do: GenServer.call(__MODULE__, :get_history)
 
   @doc """
   Calculate PID gains using Lambda Tuning method.
@@ -134,7 +138,10 @@ defmodule ExpressoFirmware.Controller do
     tau = Keyword.get(merged, :tau_seconds, @default_tau_seconds)
     lambda = Keyword.get(merged, :lambda_seconds, @default_lambda_seconds)
     steam_lambda = Keyword.get(merged, :steam_lambda_seconds, @default_steam_lambda_seconds)
-    process_gain = Keyword.get(merged, :process_gain, @default_process_gain)
+    raw_gain = Keyword.get(merged, :process_gain, @default_process_gain)
+    # process_gain: 0 causes 1/0 ArithmeticError in calculate_lambda_gains, crashing init
+    # after GPIO refs are opened but before {:ok, state} is returned — leaking both pins.
+    process_gain = if raw_gain > 0, do: raw_gain, else: (Logger.error("Config process_gain=#{raw_gain} is invalid, using default #{@default_process_gain}"); @default_process_gain)
 
     merged =
       if autotune_enabled do
@@ -188,6 +195,9 @@ defmodule ExpressoFirmware.Controller do
   # --- Callbacks ---
   @impl true
   def handle_call(:get_state, _from, state), do: {:reply, state, state}
+
+  @impl true
+  def handle_call(:get_history, _from, state), do: {:reply, :queue.to_list(state.history), state}
 
   @impl true
   def handle_call({:set_config, new_config}, _, %State{} = state) do
@@ -449,6 +459,8 @@ defmodule ExpressoFirmware.Controller do
 
     heater().set_output(output, state.max_output)
 
+    state = record_sample(state, reading, output)
+
     Process.send_after(self(), :control_loop, state.cycle_ms)
 
     {:noreply, state}
@@ -503,6 +515,26 @@ defmodule ExpressoFirmware.Controller do
   defp clamp_integral(integral, _), do: integral
 
   defp get_reading(), do: heater().get_reading()
+
+  defp record_sample(state, reading, output) do
+    sample = %{
+      t: System.os_time(:millisecond),
+      temp: reading,
+      sp: state.setpoint,
+      out: output,
+      mode: state.mode
+    }
+
+    {q, count} =
+      if state.history_count >= @history_max do
+        {{:value, _oldest}, new_q} = :queue.out(state.history)
+        {new_q, state.history_count}
+      else
+        {state.history, state.history_count + 1}
+      end
+
+    struct(state, history: :queue.in(sample, q), history_count: count)
+  end
 
   defp brew_pid_state(state) do
     struct(state,

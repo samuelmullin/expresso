@@ -302,6 +302,110 @@ defmodule ExpressoFirmware.ControllerTest do
     end
   end
 
+  describe "history recording" do
+    test "initialized PID tick adds a sample to history" do
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        setpoint: 93.5,
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        max_integral: 20.0,
+        min_output: 0,
+        max_output: 100,
+        last_error: 0,
+        error_sum: 0.0,
+        history: :queue.new(),
+        history_count: 0,
+      }
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      assert new_state.history_count == 1
+      assert [sample] = :queue.to_list(new_state.history)
+      assert sample.mode == :pid
+      assert is_integer(sample.t)
+      assert is_float(sample.temp)
+      assert sample.sp == 93.5
+      assert sample.out == new_state.last_output
+    end
+
+    test "disabled mode tick does not add a sample" do
+      state = %Controller.State{
+        mode: :disabled,
+        history: :queue.new(),
+        history_count: 0,
+      }
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      assert new_state.history_count == 0
+      assert :queue.to_list(new_state.history) == []
+    end
+
+    test "uninitialized PID tick does not add a sample" do
+      state = %Controller.State{
+        mode: :pid,
+        initialized: false,
+        setpoint: 93.5,
+        history: :queue.new(),
+        history_count: 0,
+      }
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      assert new_state.history_count == 0
+      assert :queue.to_list(new_state.history) == []
+    end
+
+    test "ring buffer wraps at history max and drops oldest sample" do
+      history_max = 600
+
+      full_q =
+        Enum.reduce(1..history_max, :queue.new(), fn i, q ->
+          :queue.in(%{t: i, temp: 90.0, sp: 93.5, out: 50, mode: :pid}, q)
+        end)
+
+      state = %Controller.State{
+        mode: :pid,
+        initialized: true,
+        setpoint: 93.5,
+        kp: 16.0,
+        ki: 2.5,
+        kd: 16.0,
+        max_integral: 20.0,
+        min_output: 0,
+        max_output: 100,
+        last_error: 0,
+        error_sum: 0.0,
+        history: full_q,
+        history_count: history_max,
+      }
+
+      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
+
+      assert new_state.history_count == history_max
+      samples = :queue.to_list(new_state.history)
+      assert length(samples) == history_max
+      assert hd(samples).t == 2
+    end
+
+    test "get_history returns oldest-first list" do
+      q =
+        :queue.in(
+          %{t: 1, temp: 90.0, sp: 93.5, out: 50, mode: :pid},
+          :queue.in(%{t: 0, temp: 89.0, sp: 93.5, out: 55, mode: :pid}, :queue.new())
+        )
+
+      state = %Controller.State{history: q, history_count: 2}
+
+      {:reply, samples, _} = Controller.handle_call(:get_history, nil, state)
+
+      assert [%{t: 0}, %{t: 1}] = samples
+    end
+  end
+
   describe "autotune toggle" do
     test "autotune_lambda returns :autotune_disabled when autotune is off" do
       state = %Controller.State{autotune_enabled: false, brew_kp: 1.0, brew_ki: 0.01, brew_kd: 0.0}
