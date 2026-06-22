@@ -182,6 +182,12 @@
   border-color: #1e6b3e;
 }
 
+.btn-secondary {
+  background: #1e3a7a;
+  color: #fff;
+  border-color: #1e3a7a;
+}
+
 .save-feedback {
   padding: 0.4rem 0.75rem;
   border-radius: 4px;

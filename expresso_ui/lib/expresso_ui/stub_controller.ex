@@ -15,6 +15,12 @@ defmodule ExpressoUi.StubController do
     steam_kp: 0.5357,
     steam_ki: 0.00893,
     steam_kd: 0.0,
+    lambda_seconds: 10.0,
+    steam_lambda_seconds: 15.0,
+    tau_seconds: 45.0,
+    process_gain: 1.0,
+    brew_cooling_compensation_c: 2.7,
+    brew_kp_multiplier: 1.2,
     cycle_ms: 1000,
     min_output: 0,
     max_output: 100,
@@ -29,4 +35,6 @@ defmodule ExpressoUi.StubController do
     config = if is_map(config), do: config, else: Enum.into(config, %{})
     Map.merge(@state, config)
   end
+
+  def autotune_lambda(_lambda_seconds), do: {:ok, {@state.brew_kp, @state.brew_ki, @state.brew_kd}}
 end
