@@ -18,12 +18,6 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
     previous_config_path = Application.get_env(:expresso_firmware, :config_path)
     Application.put_env(:expresso_firmware, :config_path, config_path)
 
-    history_path =
-      Path.join(System.tmp_dir!(), "integration_history_test_#{System.unique_integer()}.json")
-
-    previous_history_path = Application.get_env(:expresso_firmware, :history_path)
-    Application.put_env(:expresso_firmware, :history_path, history_path)
-
     on_exit(fn ->
       if is_nil(previous_heater) do
         Application.delete_env(:expresso_firmware, :heater_module)
@@ -37,15 +31,7 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
         Application.put_env(:expresso_firmware, :config_path, previous_config_path)
       end
 
-      if is_nil(previous_history_path) do
-        Application.delete_env(:expresso_firmware, :history_path)
-      else
-        Application.put_env(:expresso_firmware, :history_path, previous_history_path)
-      end
-
       File.rm(config_path)
-      File.rm(history_path)
-      File.rm(history_path <> ".tmp")
     end)
   end
 
@@ -87,8 +73,7 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
       error_sum: 0.0,
       initialized: false,
       history: :queue.new(),
-      history_count: 0,
-      history_flush_counter: 0
+      history_count: 0
     }
 
     struct(defaults, overrides)
@@ -300,17 +285,7 @@ defmodule ExpressoFirmware.ControllerIntegrationTest do
     end
   end
 
-  describe "history persistence" do
-    test "History.load returns persisted samples used by controller init" do
-      sample = %{"t" => 999, "temp" => 95.0, "sp" => 93.5, "out" => 45, "mode" => "pid"}
-      history_path = Application.fetch_env!(:expresso_firmware, :history_path)
-      File.write!(history_path, Jason.encode!([sample]))
-
-      {:ok, samples} = ExpressoFirmware.History.load()
-
-      assert [%{t: 999, temp: 95.0, sp: 93.5, out: 45, mode: :pid}] = samples
-    end
-
+  describe "history recording" do
     test "get_history returns empty list when no samples recorded" do
       state = base_state(mode: :disabled)
 

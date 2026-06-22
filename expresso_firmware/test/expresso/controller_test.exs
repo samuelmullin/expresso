@@ -17,12 +17,6 @@ defmodule ExpressoFirmware.ControllerTest do
   setup do
     previous_heater = Application.get_env(:expresso_firmware, :heater_module)
     Application.put_env(:expresso_firmware, :heater_module, TestHeater)
-    previous_history_path = Application.get_env(:expresso_firmware, :history_path)
-
-    history_path =
-      Path.join(System.tmp_dir!(), "controller_history_test_#{System.unique_integer()}.json")
-
-    Application.put_env(:expresso_firmware, :history_path, history_path)
     Process.register(self(), __MODULE__)
 
     on_exit(fn ->
@@ -35,15 +29,6 @@ defmodule ExpressoFirmware.ControllerTest do
       if Process.whereis(__MODULE__) == self() do
         Process.unregister(__MODULE__)
       end
-
-      if is_nil(previous_history_path) do
-        Application.delete_env(:expresso_firmware, :history_path)
-      else
-        Application.put_env(:expresso_firmware, :history_path, previous_history_path)
-      end
-
-      File.rm(history_path)
-      File.rm(history_path <> ".tmp")
     end)
   end
 
@@ -71,21 +56,6 @@ defmodule ExpressoFirmware.ControllerTest do
     assert state.brew_kp == 12.0
     assert state.ki == 0.5
     assert state.kd == 1.25
-  end
-
-  test "init loads persisted history into state" do
-    history_path = Application.fetch_env!(:expresso_firmware, :history_path)
-
-    samples =
-      for t <- 1..605 do
-        %{"t" => t, "temp" => 90.0, "sp" => 93.5, "out" => 50, "mode" => "pid"}
-      end
-
-    File.write!(history_path, Jason.encode!(samples))
-
-    assert {:ok, state} = Controller.init([])
-    assert state.history_count == 600
-    assert [%{t: 6} | _] = :queue.to_list(state.history)
   end
 
   test "forces heater output off when the controller terminates" do
@@ -348,7 +318,6 @@ defmodule ExpressoFirmware.ControllerTest do
         error_sum: 0.0,
         history: :queue.new(),
         history_count: 0,
-        history_flush_counter: 0
       }
 
       {:noreply, new_state} = Controller.handle_info(:control_loop, state)
@@ -367,7 +336,6 @@ defmodule ExpressoFirmware.ControllerTest do
         mode: :disabled,
         history: :queue.new(),
         history_count: 0,
-        history_flush_counter: 0
       }
 
       {:noreply, new_state} = Controller.handle_info(:control_loop, state)
@@ -383,7 +351,6 @@ defmodule ExpressoFirmware.ControllerTest do
         setpoint: 93.5,
         history: :queue.new(),
         history_count: 0,
-        history_flush_counter: 0
       }
 
       {:noreply, new_state} = Controller.handle_info(:control_loop, state)
@@ -414,7 +381,6 @@ defmodule ExpressoFirmware.ControllerTest do
         error_sum: 0.0,
         history: full_q,
         history_count: history_max,
-        history_flush_counter: 0
       }
 
       {:noreply, new_state} = Controller.handle_info(:control_loop, state)
@@ -425,34 +391,6 @@ defmodule ExpressoFirmware.ControllerTest do
       assert hd(samples).t == 2
     end
 
-    test "flushes when pre-reset flush counter reaches threshold" do
-      history_path = Application.fetch_env!(:expresso_firmware, :history_path)
-
-      state = %Controller.State{
-        mode: :pid,
-        initialized: true,
-        setpoint: 93.5,
-        kp: 16.0,
-        ki: 2.5,
-        kd: 16.0,
-        max_integral: 20.0,
-        min_output: 0,
-        max_output: 100,
-        last_error: 0,
-        error_sum: 0.0,
-        history: :queue.new(),
-        history_count: 0,
-        history_flush_counter: 29
-      }
-
-      {:noreply, new_state} = Controller.handle_info(:control_loop, state)
-
-      assert new_state.history_flush_counter == 0
-      assert {:ok, [%{t: t, temp: 95.0, sp: 93.5, mode: :pid}]} = ExpressoFirmware.History.load()
-      assert is_integer(t)
-      assert File.exists?(history_path)
-    end
-
     test "get_history returns oldest-first list" do
       q =
         :queue.in(
@@ -460,7 +398,7 @@ defmodule ExpressoFirmware.ControllerTest do
           :queue.in(%{t: 0, temp: 89.0, sp: 93.5, out: 55, mode: :pid}, :queue.new())
         )
 
-      state = %Controller.State{history: q, history_count: 2, history_flush_counter: 0}
+      state = %Controller.State{history: q, history_count: 2}
 
       {:reply, samples, _} = Controller.handle_call(:get_history, nil, state)
 
