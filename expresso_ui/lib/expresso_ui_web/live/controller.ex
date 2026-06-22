@@ -82,6 +82,11 @@ defmodule ExpressoUiWeb.ControllerLive do
                 <label>Steam KI <%= number_input f, :steam_ki, value: @steam_ki, step: "0.00001", class: "settings-input", disabled: @settings_locked %></label>
                 <label>Steam KD <%= number_input f, :steam_kd, value: @steam_kd, step: "0.001", class: "settings-input", disabled: @settings_locked %></label>
               <% end %>
+              <%= if not @autotune_enabled do %>
+                <label>Cycle (ms)
+                  <%= number_input f, :cycle_ms, value: @cycle_ms, step: "1", class: "settings-input", disabled: @settings_locked %>
+                </label>
+              <% end %>
             </div>
 
             <%= if @autotune_enabled do %>
@@ -109,22 +114,6 @@ defmodule ExpressoUiWeb.ControllerLive do
               </label>
               <label>KP Multiplier
                 <%= number_input f, :brew_kp_multiplier, value: @brew_kp_multiplier, step: "0.01", class: "settings-input", disabled: @settings_locked %>
-              </label>
-            </div>
-
-            <div class="settings-section">
-              <h3 class="settings-section-title">PID</h3>
-              <label>Cycle (ms)
-                <%= number_input f, :cycle_ms, value: @cycle_ms, step: "1", class: "settings-input", disabled: @settings_locked %>
-              </label>
-              <label>Max Integral
-                <%= number_input f, :max_integral, value: @max_integral, step: "0.1", class: "settings-input", disabled: @settings_locked %>
-              </label>
-              <label>Min Output
-                <%= number_input f, :min_output, value: @min_output, step: "1", class: "settings-input", disabled: @settings_locked %>
-              </label>
-              <label>Max Output
-                <%= number_input f, :max_output, value: @max_output, step: "1", class: "settings-input", disabled: @settings_locked %>
               </label>
             </div>
 
@@ -227,20 +216,12 @@ defmodule ExpressoUiWeb.ControllerLive do
     base_parse =
       with {brew_setpoint, _} <- Float.parse(cfg["brew_setpoint"] || ""),
            {steam_setpoint, _} <- Float.parse(cfg["steam_setpoint"] || ""),
-           {cycle_ms, _} <- Integer.parse(cfg["cycle_ms"] || ""),
-           {max_integral, _} <- Float.parse(cfg["max_integral"] || ""),
-           {min_output, _} <- Float.parse(cfg["min_output"] || ""),
-           {max_output, _} <- Float.parse(cfg["max_output"] || ""),
            {brew_cooling_compensation_c, _} <- Float.parse(cfg["brew_cooling_compensation_c"] || ""),
            {brew_kp_multiplier, _} <- Float.parse(cfg["brew_kp_multiplier"] || "") do
         {:ok,
          [
            brew_setpoint: brew_setpoint,
            steam_setpoint: steam_setpoint,
-           cycle_ms: cycle_ms,
-           max_integral: max_integral,
-           min_output: min_output,
-           max_output: max_output,
            autotune_enabled: autotune_enabled,
            brew_cooling_compensation_c: brew_cooling_compensation_c,
            brew_kp_multiplier: brew_kp_multiplier
@@ -276,7 +257,8 @@ defmodule ExpressoUiWeb.ControllerLive do
              {brew_kd, _} <- Float.parse(cfg["brew_kd"] || ""),
              {steam_kp, _} <- Float.parse(cfg["steam_kp"] || ""),
              {steam_ki, _} <- Float.parse(cfg["steam_ki"] || ""),
-             {steam_kd, _} <- Float.parse(cfg["steam_kd"] || "") do
+             {steam_kd, _} <- Float.parse(cfg["steam_kd"] || ""),
+             {cycle_ms, _} <- Integer.parse(cfg["cycle_ms"] || "") do
           {:ok,
            [
              brew_kp: brew_kp,
@@ -284,7 +266,8 @@ defmodule ExpressoUiWeb.ControllerLive do
              brew_kd: brew_kd,
              steam_kp: steam_kp,
              steam_ki: steam_ki,
-             steam_kd: steam_kd
+             steam_kd: steam_kd,
+             cycle_ms: cycle_ms
            ]}
         else
           _ -> :error
@@ -327,9 +310,6 @@ defmodule ExpressoUiWeb.ControllerLive do
       brew_cooling_compensation_c: state.brew_cooling_compensation_c,
       brew_kp_multiplier: state.brew_kp_multiplier,
       cycle_ms: state.cycle_ms,
-      max_integral: state.max_integral,
-      min_output: state.min_output,
-      max_output: state.max_output,
       history: history,
       settings_locked: locked,
       save_result: save_result,
