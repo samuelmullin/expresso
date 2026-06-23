@@ -24,7 +24,8 @@ defmodule ExpressoUi.StubController do
     cycle_ms: 1000,
     min_output: 0,
     max_output: 100,
-    max_integral: 20.0
+    max_integral: 20.0,
+    disable_reason: nil
   }
 
   def get_state, do: @state
@@ -37,4 +38,6 @@ defmodule ExpressoUi.StubController do
   end
 
   def autotune_lambda(_lambda_seconds), do: {:ok, {@state.brew_kp, @state.brew_ki, @state.brew_kd}}
+
+  def start_calibration, do: {:error, :temperature_too_high}
 end
