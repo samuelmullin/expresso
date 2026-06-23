@@ -63,6 +63,14 @@
 .mode-badge--pid { background: #1e3a7a; color: #a0c0f0; }
 .mode-badge--pwm { background: #5a3e1e; color: #f0d0a0; }
 .mode-badge--disabled { background: #333; color: #888; }
+.mode-badge--calibrating { background: #5a1e7a; color: #d0a0f0; }
+
+.disable-reason {
+  font-size: 0.6rem;
+  color: #f08080;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
 .switch-dot {
   width: 12px;

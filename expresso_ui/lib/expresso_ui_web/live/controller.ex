@@ -23,6 +23,9 @@ defmodule ExpressoUiWeb.ControllerLive do
         </div>
         <div class="status-item">
           <span class={"mode-badge mode-badge--#{@mode}"}><%= @mode %></span>
+          <%= if @disable_reason do %>
+            <span class="disable-reason"><%= format_disable_reason(@disable_reason) %></span>
+          <% end %>
           <span class="status-label">mode</span>
         </div>
         <div class="status-item">
@@ -128,6 +131,7 @@ defmodule ExpressoUiWeb.ControllerLive do
               <button type="button" phx-click="edit" class="btn">Edit</button>
               <%= if @autotune_enabled do %>
                 <button type="button" phx-click="recalculate" class="btn btn-secondary">Recalculate Gains</button>
+                <button type="button" phx-click="calibrate" class="btn btn-secondary">Calibrate</button>
               <% end %>
             <% else %>
               <button type="submit" class="btn btn-primary">Save</button>
@@ -161,8 +165,12 @@ defmodule ExpressoUiWeb.ControllerLive do
         nil -> {nil, 0}
         {:error, _} = r -> {r, 0}
         {:ok, _} = r ->
-          ticks = socket.assigns.save_ticks + 1
-          if ticks > 4, do: {nil, 0}, else: {r, ticks}
+          if state.mode == :calibrating do
+            {r, 0}
+          else
+            ticks = socket.assigns.save_ticks + 1
+            if ticks > 4, do: {nil, 0}, else: {r, ticks}
+          end
       end
 
     {:noreply,
@@ -171,6 +179,7 @@ defmodule ExpressoUiWeb.ControllerLive do
        setpoint: state.setpoint,
        output: state.last_output,
        mode: state.mode,
+       disable_reason: Map.get(state, :disable_reason),
        brew_switch: state.brew_switch_state,
        steam_switch: state.steam_switch_state,
        brew_kp: state.brew_kp,
@@ -212,6 +221,17 @@ defmodule ExpressoUiWeb.ControllerLive do
 
       {:error, :autotune_disabled} ->
         {:noreply, assign(socket, save_result: {:error, "Autotune is disabled."}, save_ticks: 0)}
+    end
+  end
+
+  def handle_event("calibrate", _, socket) do
+    case controller().start_calibration() do
+      :ok ->
+        {:noreply, assign(socket, save_result: {:ok, "Calibrating… (5 min). Mode will return to disabled when done."}, save_ticks: 0)}
+      {:error, :temperature_too_high} ->
+        {:noreply, assign(socket, save_result: {:error, "Temperature too high — machine must be below 40°C to calibrate."}, save_ticks: 0)}
+      {:error, :already_calibrating} ->
+        {:noreply, assign(socket, save_result: {:error, "Calibration already in progress."}, save_ticks: 0)}
     end
   end
 
@@ -297,6 +317,7 @@ defmodule ExpressoUiWeb.ControllerLive do
       setpoint: state.setpoint,
       output: state.last_output,
       mode: state.mode,
+      disable_reason: Map.get(state, :disable_reason),
       brew_switch: state.brew_switch_state,
       steam_switch: state.steam_switch_state,
       brew_setpoint: state.brew_setpoint,
@@ -321,6 +342,10 @@ defmodule ExpressoUiWeb.ControllerLive do
       save_ticks: save_ticks
     ]
   end
+
+  defp format_disable_reason(:sensor_failure), do: "sensor fault"
+  defp format_disable_reason(:brew_timeout), do: "brew timeout"
+  defp format_disable_reason(_), do: "fault"
 
   defp controller do
     Application.get_env(:expresso_ui, :controller_module, ExpressoUi.StubController)

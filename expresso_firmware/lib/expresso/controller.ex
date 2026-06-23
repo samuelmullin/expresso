@@ -27,6 +27,11 @@ defmodule ExpressoFirmware.Controller do
   # Max continuous brew time before forced heater cut
   @max_brew_ms 60_000
 
+  # Step-response calibration defaults
+  @cal_step_output 50        # % heater output during step
+  @cal_duration_ms 300_000   # 5 minutes
+  @cal_max_start_temp 40.0   # require cold machine
+
   # Keys that are safe to persist to / load from the config file.
   # Runtime-only State fields (mode, initialized, brew_switch_state, error_sum, etc.) are excluded.
   @persisted_keys [
@@ -84,7 +89,11 @@ defmodule ExpressoFirmware.Controller do
               history: :queue.new(),
               history_count: 0,
               sensor_failure_count: 0,
-              brew_start_ms: nil
+              brew_start_ms: nil,
+              disable_reason: nil,
+              cal_start_temp: nil,
+              cal_start_ms: nil,
+              cal_samples: []
   end
 
   # --- Public API ---
@@ -124,6 +133,16 @@ defmodule ExpressoFirmware.Controller do
 
   def autotune_lambda(lambda_seconds) do
     GenServer.call(__MODULE__, {:autotune_lambda, lambda_seconds})
+  end
+
+  @doc """
+  Start a step-response calibration to measure tau and process_gain.
+  Requires temperature < #{@cal_max_start_temp}°C. Applies #{@cal_step_output}%
+  heater output for #{div(@cal_duration_ms, 60_000)} minutes, then fits a
+  first-order model and saves the results.
+  """
+  def start_calibration do
+    GenServer.call(__MODULE__, :start_calibration, @cal_duration_ms + 10_000)
   end
 
   @impl true
@@ -328,12 +347,40 @@ defmodule ExpressoFirmware.Controller do
   end
 
   @impl true
+  def handle_call(:start_calibration, _from, %State{mode: :calibrating} = state) do
+    {:reply, {:error, :already_calibrating}, state}
+  end
+
+  @impl true
+  def handle_call(:start_calibration, _from, state) do
+    if state.reading > @cal_max_start_temp do
+      {:reply, {:error, :temperature_too_high}, state}
+    else
+      Logger.info("Starting step-response calibration: T_start=#{state.reading}°C, step=#{@cal_step_output}%")
+      heater().set_output(@cal_step_output, state.max_output)
+
+      new_state =
+        struct(state,
+          mode: :calibrating,
+          cal_start_temp: state.reading,
+          cal_start_ms: System.monotonic_time(:millisecond),
+          cal_samples: [{0, state.reading}],
+          disable_reason: nil
+        )
+
+      Process.send_after(self(), :control_loop, state.cycle_ms)
+      {:reply, :ok, new_state}
+    end
+  end
+
+  @impl true
   def handle_cast(:enable_pid, %State{} = state) do
     Logger.info("Enabling PID")
 
+    base = struct(state, disable_reason: nil)
     case state.brew_switch_state do
-      :on -> {:noreply, brew_pid_state(state)}
-      :off -> {:noreply, struct(state, mode: :pid, initialized: false)}
+      :on -> {:noreply, brew_pid_state(base)}
+      :off -> {:noreply, struct(base, mode: :pid, initialized: false)}
     end
   end
 
@@ -363,7 +410,8 @@ defmodule ExpressoFirmware.Controller do
         kd: state.brew_kd,
         error_sum: 0.0,
         last_error: 0,
-        brew_start_ms: nil
+        brew_start_ms: nil,
+        disable_reason: nil
       )
 
     {:noreply, normal_state}
@@ -485,6 +533,49 @@ defmodule ExpressoFirmware.Controller do
   end
 
   @impl true
+  def handle_info(:control_loop, %State{mode: :calibrating} = state) do
+    reading = get_reading()
+    elapsed = System.monotonic_time(:millisecond) - state.cal_start_ms
+
+    heater().set_output(@cal_step_output, state.max_output)
+
+    if elapsed >= @cal_duration_ms do
+      # Fit uses only historically collected samples — not the final trigger reading
+      # which arrives at an imprecise elapsed time and may be stale.
+      case fit_step_response(state.cal_start_temp, state.cal_samples) do
+        {:ok, tau, process_gain} ->
+          Logger.info(
+            "Calibration complete: tau=#{Float.round(tau, 1)}s, process_gain=#{Float.round(process_gain, 3)}"
+          )
+          new_state =
+            struct(state,
+              mode: :disabled,
+              tau_seconds: tau,
+              process_gain: process_gain,
+              cal_samples: []
+            )
+          Config.save(%{tau_seconds: tau, process_gain: process_gain})
+          |> case do
+            :ok -> :ok
+            {:error, reason} -> Logger.error("Config.save after calibration failed: #{inspect(reason)}")
+          end
+          Process.send_after(self(), :control_loop, state.cycle_ms)
+          {:noreply, struct(new_state, reading: reading), 2 * state.cycle_ms}
+
+        {:error, reason} ->
+          Logger.error("Calibration failed: #{inspect(reason)}")
+          heater().set_output(0, state.max_output)
+          Process.send_after(self(), :control_loop, state.cycle_ms)
+          {:noreply, struct(state, mode: :disabled, cal_samples: [], reading: reading), 2 * state.cycle_ms}
+      end
+    else
+      samples = [{elapsed, reading} | state.cal_samples]
+      Process.send_after(self(), :control_loop, state.cycle_ms)
+      {:noreply, struct(state, cal_samples: samples, reading: reading), 2 * state.cycle_ms}
+    end
+  end
+
+  @impl true
   def handle_info(:control_loop, %State{mode: :disabled} = state) do
     Logger.debug("Heater control is disabled")
     Process.send_after(self(), :control_loop, state.cycle_ms)
@@ -516,6 +607,36 @@ defmodule ExpressoFirmware.Controller do
 
   # --- Private API ---
 
+  # Fit a first-order step-response model from calibration samples.
+  # Assumes the run is long enough that the final temperature approximates T_ss
+  # (5 min / expected tau_max ~120s → ~2.5 time constants → 91%+ rise).
+  # samples: [{elapsed_ms, temp}, ...]
+  # Returns {:ok, tau_seconds, process_gain} or {:error, reason}
+  defp fit_step_response(t_start, samples) do
+    ordered = Enum.sort_by(samples, fn {t, _} -> t end)
+    {t_end_ms, t_end} = List.last(ordered)
+
+    delta_ss = t_end - t_start
+
+    if delta_ss < 5.0 do
+      {:error, :insufficient_temperature_rise}
+    else
+      # Tau: find when temp first crosses 63.2% of the observed rise (T_end ≈ T_ss)
+      target = t_start + 0.632 * delta_ss
+
+      tau_ms =
+        case Enum.find(ordered, fn {_, temp} -> temp >= target end) do
+          nil -> t_end_ms
+          {t, _} -> t
+        end
+
+      tau_s = max(tau_ms / 1000.0, 1.0)
+      process_gain = delta_ss / @cal_step_output
+
+      {:ok, tau_s, process_gain}
+    end
+  end
+
   defp valid_reading?(r), do: is_number(r) and r >= @sensor_min_c and r <= @sensor_max_c
 
   defp handle_sensor_failure(state) do
@@ -525,7 +646,7 @@ defmodule ExpressoFirmware.Controller do
     if count >= @sensor_failure_threshold do
       Logger.error("Sensor failure — disabling heater")
       heater().set_output(0, state.max_output)
-      struct(state, sensor_failure_count: count, mode: :disabled)
+      struct(state, sensor_failure_count: count, mode: :disabled, disable_reason: :sensor_failure)
     else
       struct(state, sensor_failure_count: count)
     end
@@ -537,7 +658,7 @@ defmodule ExpressoFirmware.Controller do
     if elapsed >= @max_brew_ms do
       Logger.warning("Brew timeout (#{div(elapsed, 1000)}s) — disabling heater")
       heater().set_output(0, state.max_output)
-      struct(state, mode: :disabled, brew_start_ms: nil)
+      struct(state, mode: :disabled, brew_start_ms: nil, disable_reason: :brew_timeout)
     else
       state
     end
