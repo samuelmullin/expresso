@@ -656,6 +656,56 @@ defmodule ExpressoFirmware.ControllerTest do
     end
   end
 
+  describe "auto-calibration on boot" do
+    defmodule ColdHeater do
+      def set_output(output, max_output), do: send(ExpressoFirmware.ControllerTest, {:set_output, output, max_output})
+      def get_reading(), do: 20.0
+    end
+
+    test "init auto-starts calibration when uncalibrated and cold" do
+      Application.put_env(:expresso_firmware, :heater_module, ColdHeater)
+      {:ok, state} = Controller.init(calibrated: false)
+      assert state.mode == :calibrating
+      assert state.cal_start_temp == 20.0
+      assert_receive {:set_output, 50, 100}
+    end
+
+    test "init skips calibration when already calibrated" do
+      Application.put_env(:expresso_firmware, :heater_module, ColdHeater)
+      {:ok, state} = Controller.init(calibrated: true)
+      assert state.mode == :disabled
+    end
+
+    test "init skips calibration when warm even if uncalibrated" do
+      {:ok, state} = Controller.init(calibrated: false)
+      # TestHeater returns 95°C > 40°C threshold
+      assert state.mode == :disabled
+    end
+
+    test "calibration completion sets calibrated: true" do
+      tau_s = 60.0
+      delta_ss = 50.0
+      t_start = 20.0
+
+      samples = for t_s <- 0..300//5 do
+        {t_s * 1000, t_start + delta_ss * (1 - :math.exp(-t_s / tau_s))}
+      end
+
+      state = %Controller.State{
+        mode: :calibrating,
+        reading: t_start + delta_ss * (1 - :math.exp(-300.0 / tau_s)),
+        cal_start_temp: t_start,
+        cal_start_ms: System.monotonic_time(:millisecond) - 300_001,
+        cal_samples: samples,
+        cycle_ms: 1000,
+        max_output: 100
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.calibrated == true
+    end
+  end
+
   describe "step-response calibration" do
     test "start_calibration rejected when temperature is too high" do
       state = %Controller.State{mode: :disabled, reading: 50.0, max_output: 100}
@@ -671,7 +721,7 @@ defmodule ExpressoFirmware.ControllerTest do
 
     test "start_calibration transitions to :calibrating mode when cold" do
       state = %Controller.State{mode: :disabled, reading: 20.0, max_output: 100, cycle_ms: 1000}
-      {:reply, :ok, new_state} = Controller.handle_call(:start_calibration, nil, state)
+      {:reply, :ok, new_state, _} = Controller.handle_call(:start_calibration, nil, state)
       assert new_state.mode == :calibrating
       assert new_state.cal_start_temp == 20.0
       assert not is_nil(new_state.cal_start_ms)

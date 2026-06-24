@@ -66,7 +66,8 @@ defmodule ExpressoFirmware.ConfigTest do
       steam_ki: 0.0125,
       steam_kd: 0.0,
       steam_lambda_seconds: 15.0,
-      cycle_ms: 1000
+      cycle_ms: 1000,
+      calibrated: true
     }
 
     assert :ok = Config.save(values)

@@ -38,7 +38,8 @@ defmodule ExpressoFirmware.Controller do
     :autotune_enabled, :brew_kp, :brew_ki, :brew_kd, :lambda_seconds,
     :tau_seconds, :process_gain, :brew_setpoint, :steam_setpoint,
     :brew_cooling_compensation_c, :brew_kp_multiplier,
-    :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds, :cycle_ms
+    :steam_kp, :steam_ki, :steam_kd, :steam_lambda_seconds, :cycle_ms,
+    :calibrated
   ]
 
   # Gain fields owned by the autotune system. When autotune is enabled, set_config
@@ -93,7 +94,8 @@ defmodule ExpressoFirmware.Controller do
               disable_reason: nil,
               cal_start_temp: nil,
               cal_start_ms: nil,
-              cal_samples: []
+              cal_samples: [],
+              calibrated: false
   end
 
   # --- Public API ---
@@ -214,11 +216,31 @@ defmodule ExpressoFirmware.Controller do
 
     Process.send_after(self(), :control_loop, 1000)
 
-    {:ok,
-     struct(
-       State,
-       merged ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref]
-     )}
+    initial_reading =
+      try do
+        get_reading()
+      catch
+        :exit, _ -> nil
+        _, _ -> nil
+      end
+
+    reading = if valid_reading?(initial_reading), do: initial_reading, else: 20.0
+
+    base_state =
+      struct(State, merged ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref, reading: reading])
+
+    state =
+      if not base_state.calibrated and reading < @cal_max_start_temp do
+        Logger.info("First run: no calibration on file — auto-starting step-response calibration")
+        begin_calibration(base_state)
+      else
+        if not base_state.calibrated do
+          Logger.warning("Not calibrated and machine is warm (#{reading}°C) — using default gains until next cold boot")
+        end
+        base_state
+      end
+
+    {:ok, state}
   end
 
   # --- Callbacks ---
@@ -356,20 +378,9 @@ defmodule ExpressoFirmware.Controller do
     if state.reading > @cal_max_start_temp do
       {:reply, {:error, :temperature_too_high}, state}
     else
-      Logger.info("Starting step-response calibration: T_start=#{state.reading}°C, step=#{@cal_step_output}%")
-      heater().set_output(@cal_step_output, state.max_output)
-
-      new_state =
-        struct(state,
-          mode: :calibrating,
-          cal_start_temp: state.reading,
-          cal_start_ms: System.monotonic_time(:millisecond),
-          cal_samples: [{0, state.reading}],
-          disable_reason: nil
-        )
-
+      new_state = begin_calibration(state)
       Process.send_after(self(), :control_loop, state.cycle_ms)
-      {:reply, :ok, new_state}
+      {:reply, :ok, new_state, 2 * state.cycle_ms}
     end
   end
 
@@ -552,9 +563,10 @@ defmodule ExpressoFirmware.Controller do
               mode: :disabled,
               tau_seconds: tau,
               process_gain: process_gain,
-              cal_samples: []
+              cal_samples: [],
+              calibrated: true
             )
-          Config.save(%{tau_seconds: tau, process_gain: process_gain})
+          Config.save(%{tau_seconds: tau, process_gain: process_gain, calibrated: true})
           |> case do
             :ok -> :ok
             {:error, reason} -> Logger.error("Config.save after calibration failed: #{inspect(reason)}")
@@ -635,6 +647,18 @@ defmodule ExpressoFirmware.Controller do
 
       {:ok, tau_s, process_gain}
     end
+  end
+
+  defp begin_calibration(state) do
+    Logger.info("Starting step-response calibration: T_start=#{state.reading}°C, step=#{@cal_step_output}%")
+    heater().set_output(@cal_step_output, state.max_output)
+    struct(state,
+      mode: :calibrating,
+      cal_start_temp: state.reading,
+      cal_start_ms: System.monotonic_time(:millisecond),
+      cal_samples: [{0, state.reading}],
+      disable_reason: nil
+    )
   end
 
   defp valid_reading?(r), do: is_number(r) and r >= @sensor_min_c and r <= @sensor_max_c
