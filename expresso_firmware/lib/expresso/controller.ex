@@ -224,13 +224,14 @@ defmodule ExpressoFirmware.Controller do
         _, _ -> nil
       end
 
-    reading = if valid_reading?(initial_reading), do: initial_reading, else: 20.0
+    sensor_ok = valid_reading?(initial_reading)
+    reading = if sensor_ok, do: initial_reading, else: 20.0
 
     base_state =
       struct(State, merged ++ [brew_switch_ref: brew_switch_ref, steam_switch_ref: steam_switch_ref, reading: reading])
 
     state =
-      if not base_state.calibrated and reading < @cal_max_start_temp do
+      if not base_state.calibrated and sensor_ok and initial_reading < @cal_max_start_temp do
         Logger.info("First run: no calibration on file — auto-starting step-response calibration")
         begin_calibration(base_state)
       else
@@ -558,19 +559,33 @@ defmodule ExpressoFirmware.Controller do
           Logger.info(
             "Calibration complete: tau=#{Float.round(tau, 1)}s, process_gain=#{Float.round(process_gain, 3)}"
           )
+          heater().set_output(0, state.max_output)
+          {new_brew_kp, new_brew_ki, new_brew_kd} = calculate_lambda_gains(tau, state.lambda_seconds, process_gain)
+          {new_steam_kp, new_steam_ki, new_steam_kd} = calculate_lambda_gains(tau, state.steam_lambda_seconds, process_gain)
+          calibrated =
+            case Config.save(%{
+              tau_seconds: tau,
+              process_gain: process_gain,
+              brew_kp: new_brew_kp, brew_ki: new_brew_ki, brew_kd: new_brew_kd,
+              steam_kp: new_steam_kp, steam_ki: new_steam_ki, steam_kd: new_steam_kd,
+              calibrated: true
+            }) do
+              :ok -> true
+              {:error, reason} ->
+                Logger.error("Config.save after calibration failed: #{inspect(reason)} — will re-calibrate on next cold boot")
+                false
+            end
           new_state =
             struct(state,
               mode: :disabled,
               tau_seconds: tau,
               process_gain: process_gain,
+              brew_kp: new_brew_kp, brew_ki: new_brew_ki, brew_kd: new_brew_kd,
+              steam_kp: new_steam_kp, steam_ki: new_steam_ki, steam_kd: new_steam_kd,
+              kp: new_brew_kp, ki: new_brew_ki, kd: new_brew_kd,
               cal_samples: [],
-              calibrated: true
+              calibrated: calibrated
             )
-          Config.save(%{tau_seconds: tau, process_gain: process_gain, calibrated: true})
-          |> case do
-            :ok -> :ok
-            {:error, reason} -> Logger.error("Config.save after calibration failed: #{inspect(reason)}")
-          end
           Process.send_after(self(), :control_loop, state.cycle_ms)
           {:noreply, struct(new_state, reading: reading), 2 * state.cycle_ms}
 
@@ -581,7 +596,13 @@ defmodule ExpressoFirmware.Controller do
           {:noreply, struct(state, mode: :disabled, cal_samples: [], reading: reading), 2 * state.cycle_ms}
       end
     else
-      samples = [{elapsed, reading} | state.cal_samples]
+      samples =
+        if valid_reading?(reading) do
+          [{elapsed, reading} | state.cal_samples]
+        else
+          Logger.warning("Calibration: invalid reading at #{div(elapsed, 1000)}s — skipping sample")
+          state.cal_samples
+        end
       Process.send_after(self(), :control_loop, state.cycle_ms)
       {:noreply, struct(state, cal_samples: samples, reading: reading), 2 * state.cycle_ms}
     end

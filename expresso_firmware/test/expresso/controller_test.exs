@@ -682,7 +682,11 @@ defmodule ExpressoFirmware.ControllerTest do
       assert state.mode == :disabled
     end
 
-    test "calibration completion sets calibrated: true" do
+    test "calibration completion sets calibrated: true and applies computed gains" do
+      tmp = Path.join(System.tmp_dir!(), "cal_test_#{System.unique_integer()}.json")
+      Application.put_env(:expresso_firmware, :config_path, tmp)
+      on_exit(fn -> File.rm(tmp); Application.delete_env(:expresso_firmware, :config_path) end)
+
       tau_s = 60.0
       delta_ss = 50.0
       t_start = 20.0
@@ -703,6 +707,9 @@ defmodule ExpressoFirmware.ControllerTest do
 
       {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
       assert new_state.calibrated == true
+      assert new_state.brew_kp > 0
+      assert new_state.kp == new_state.brew_kp
+      assert_receive {:set_output, 0, 100}
     end
   end
 
