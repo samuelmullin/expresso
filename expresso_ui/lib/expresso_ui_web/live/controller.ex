@@ -345,6 +345,7 @@ defmodule ExpressoUiWeb.ControllerLive do
 
   defp format_disable_reason(:sensor_failure), do: "sensor fault"
   defp format_disable_reason(:brew_timeout), do: "brew timeout"
+  defp format_disable_reason(:calibration_needed), do: "calibration needed"
   defp format_disable_reason(_), do: "fault"
 
   defp controller do

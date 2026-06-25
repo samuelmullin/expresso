@@ -237,8 +237,10 @@ defmodule ExpressoFirmware.Controller do
       else
         if not base_state.calibrated do
           Logger.warning("Not calibrated and machine is warm (#{reading}°C) — using default gains until next cold boot")
+          struct(base_state, disable_reason: :calibration_needed)
+        else
+          base_state
         end
-        base_state
       end
 
     {:ok, state}
@@ -584,7 +586,8 @@ defmodule ExpressoFirmware.Controller do
               steam_kp: new_steam_kp, steam_ki: new_steam_ki, steam_kd: new_steam_kd,
               kp: new_brew_kp, ki: new_brew_ki, kd: new_brew_kd,
               cal_samples: [],
-              calibrated: calibrated
+              calibrated: calibrated,
+              disable_reason: if(calibrated, do: nil, else: :calibration_needed)
             )
           Process.send_after(self(), :control_loop, state.cycle_ms)
           {:noreply, struct(new_state, reading: reading), 2 * state.cycle_ms}
@@ -593,7 +596,7 @@ defmodule ExpressoFirmware.Controller do
           Logger.error("Calibration failed: #{inspect(reason)}")
           heater().set_output(0, state.max_output)
           Process.send_after(self(), :control_loop, state.cycle_ms)
-          {:noreply, struct(state, mode: :disabled, cal_samples: [], reading: reading), 2 * state.cycle_ms}
+          {:noreply, struct(state, mode: :disabled, cal_samples: [], reading: reading, disable_reason: :calibration_needed), 2 * state.cycle_ms}
       end
     else
       samples =
