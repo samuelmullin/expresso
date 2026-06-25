@@ -676,10 +676,11 @@ defmodule ExpressoFirmware.ControllerTest do
       assert state.mode == :disabled
     end
 
-    test "init skips calibration when warm even if uncalibrated" do
+    test "init skips calibration when warm and sets calibration_needed reason" do
       {:ok, state} = Controller.init(calibrated: false)
       # TestHeater returns 95°C > 40°C threshold
       assert state.mode == :disabled
+      assert state.disable_reason == :calibration_needed
     end
 
     test "calibration completion sets calibrated: true and applies computed gains" do
@@ -749,6 +750,23 @@ defmodule ExpressoFirmware.ControllerTest do
       {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
       assert length(new_state.cal_samples) == 2
       assert_receive {:set_output, 50, 100}
+    end
+
+    test "calibration fit failure sets calibration_needed reason" do
+      state = %Controller.State{
+        mode: :calibrating,
+        reading: 21.0,
+        cal_start_temp: 20.0,
+        cal_start_ms: System.monotonic_time(:millisecond) - 300_001,
+        # Only one sample — temperature rise < 5°C → :insufficient_temperature_rise
+        cal_samples: [{0, 20.0}, {300_000, 20.5}],
+        cycle_ms: 1000,
+        max_output: 100
+      }
+
+      {:noreply, new_state, _} = Controller.handle_info(:control_loop, state)
+      assert new_state.mode == :disabled
+      assert new_state.disable_reason == :calibration_needed
     end
 
     test "calibration completes and produces tau and process_gain" do
